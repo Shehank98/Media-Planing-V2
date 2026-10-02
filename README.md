@@ -15,6 +15,7 @@ A browser-only TV media planning dashboard. Upload a TV ratings export (Excel or
 | Explore | Day/channel/category × hour heatmap (TVR, Reach %, Share %, Airings), day of week, TVR by hour, dayparts by channel, **Slot finder** ("everything at 10 PM on Hiru, Derana, Sirasa") |
 | Drill down | Configurable tree (e.g. Channel ▸ Category ▸ Program ▸ airings) |
 | Planner | Tier pyramid with Reach / Balanced / Frequency presets, spot-by-spot optimiser, spot caps per program per week, daypart min/max, weekly flighting (even, burst, pulse; roadblock or stagger), net reach and reach 3+, lock or exclude programs, fixed channel shares, health check, memo, reach build curve |
+| Schedule | Booking sheet per channel like an agency schedule: programme rows grouped by creative, day / from / to / duration, one column per campaign date, rate card, negotiated rate, totals, SSCL and VAT. Editable 30-sec rate card per programme and discount per channel. **Export Excel** (cover, one sheet per channel, spot list) with live formulas |
 | Scenarios | Save, load, compare (what changes), quick budget what-ifs, **client deck (PPTX)**, spot plan CSV, print/PDF, copy memo |
 | Duplication | Editable channel duplication matrix, gross vs net reach |
 | Data | Sortable, searchable, paged table; CSV export; data quality checks |
@@ -28,6 +29,11 @@ Every chart bar, heatmap cell, table row and insight card opens a **detail drawe
 - Every content slide has an action title, a "What this means" box and "How to read this" captions under charts; every slide has speaker notes.
 - Optional appendix: method, assumptions, full programme list.
 - Charts and tables are native and editable. With `GEMINI_API_KEY` set, Gemini can write the commentary; otherwise it is written from the plan numbers.
+
+### Creatives, campaign period and rates
+- **Creatives** (Planner settings): brand / version, duration (5–60 sec) and rotation share. Spot cost = 30-sec rate × duration ÷ 30; spots are rotated between creatives by share.
+- **Campaign period**: start and end date. Spots are placed only on dates inside the period on which the programme airs, at most N per programme per day and the weekly cap.
+- **Rates**: the 30-sec rate card is estimated as max(minimum rate, CPRP × TVR) until you type the real value in the Schedule tab; negotiated rate = rate card × (1 − channel discount). The optimiser uses negotiated costs.
 
 ### Required columns
 `Channel, Date, Start, Program, TVR`. Optional: `Day, End, Duration, Category, TVR Share %, Reach %`. Times like `20:09`, `8:09 PM` and Excel time cells are all handled.

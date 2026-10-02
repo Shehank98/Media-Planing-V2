@@ -1,7 +1,7 @@
 // Client-ready PowerPoint deck, built in the browser with pptxgenjs (loaded on demand).
 // Written for mixed audiences: every content slide has an action title, a plain-English
 // "What this means" box, "How to read" captions under charts, and speaker notes.
-import { DAYS, grp, avgT, avgR, steadiness, hl, band, chName, pn, nf, ni, lkr, fmtDate, uni, STRATS, DPS, daypart } from './engine.js';
+import { DAYS, grp, avgT, avgR, steadiness, hl, band, chName, pn, nf, ni, lkr, fmtDate, uni, STRATS, DPS, daypart, creativeMix } from './engine.js';
 import { buildContext, askRemote } from './ai.js';
 
 const LIB = 'https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js';
@@ -323,7 +323,7 @@ export async function buildDeck(S, simulate, opts = {}) {
     ['Time band', `${hl(FS.h0)} – ${hl((FS.h1 + 1) % 24)}`],
     ['Budget', lkr(A.B)],
     ['Campaign', `${A.W} weeks from ${fmtDate(S.sched.start)}`],
-    ['Spot length', `${P.spotLen} seconds`],
+    ['Creatives', creativeMix(P).map(c => `${c.name} ${c.dur}s`).join(', ')],
     ['Strategy', (STRATS[P.strategy] || { label: 'Custom' }).label + ' tier mix']
   ];
   T_(s, 'The brief', { x: 7.7, y: 1.9, w: 5, h: 0.35, fontSize: 15, bold: true, color: C.navy });
@@ -505,7 +505,7 @@ export async function buildDeck(S, simulate, opts = {}) {
   });
   box(s, M, 4.6, CW / 2 - 0.15, 2.3, C.amberLt);
   T_(s, 'Decisions we need from you', { x: M + 0.25, y: 4.75, w: 5, h: 0.32, fontSize: 14, bold: true, color: C.amber });
-  bullets(s, [`Approve the ${A.chs.length}-channel split and the ${lkr(A.spent)} budget`, `Confirm the ${fmtDate(Sc.start)} start date and ${P.spotLen}-second spot length`, 'Tell us any programmes that must be included or avoided'], { x: M + 0.25, y: 5.15, w: CW / 2 - 0.65, h: 1.65, fontSize: 12 });
+  bullets(s, [`Approve the ${A.chs.length}-channel split and the ${lkr(A.spent)} budget`, `Confirm the campaign period (${fmtDate(Sc.start)} – ${fmtDate(Sc.end)}) and the creatives`, 'Tell us any programmes that must be included or avoided'], { x: M + 0.25, y: 5.15, w: CW / 2 - 0.65, h: 1.65, fontSize: 12 });
   box(s, M + CW / 2 + 0.15, 4.6, CW / 2 - 0.15, 2.3);
   T_(s, 'What we will do', { x: M + CW / 2 + 0.4, y: 4.75, w: 5, h: 0.32, fontSize: 14, bold: true, color: C.teal });
   const ours = ai && Array.isArray(ai.nextSteps) && ai.nextSteps.length >= 3 ? ai.nextSteps.slice(0, 4).map(t => short(strip(t), 110)) : ['Confirm rates and availability with each channel', 'Book anchor programmes first, then the rest', 'Send a weekly delivery update with any changes', 'Share a results report after the campaign'];
@@ -521,7 +521,7 @@ export async function buildDeck(S, simulate, opts = {}) {
       ['Channel shortlist', P.chMode === 'manual' ? 'Channels chosen by the planner.' : `Top ${P.nCh} channels by 60% average reach + 40% average rating.`, 'Focus on channels that deliver audiences.'],
       ['Tiers', `Programmes averaging under ${nf(P.minTvrPlan ?? .5, 1)} rating excluded. Top ${100 - P.tp1}% by rating = Tier 1, bottom ${P.tp3}% = Tier 3. Budget split ${P.tiers.join('/')}%.`, 'Balances fast reach (big shows) with repetition (cheaper slots).'],
       ['Spot buying', `One spot at a time, wherever it adds the most new viewers per rupee, weighted by ratings stability. Max ${P.capWk} per programme per week; daypart limits applied.`, 'Avoids putting all the money into a few expensive shows.'],
-      ['Cost', `Cost per spot = the higher of LKR ${ni(P.minRate || 0)} or LKR ${ni(P.cprp)} × rating × ${P.spotLen}/30.`, 'An estimate until channel rate cards are confirmed.'],
+      ['Cost', `Cost per spot = the higher of LKR ${ni(P.minRate || 0)} or LKR ${ni(P.cprp)} × rating × duration ÷ 30, less the channel discount.`, 'An estimate until channel rate cards are confirmed.'],
       ['Reach', 'Each person counted once across channels using overlap factors; repeat spots add fewer new viewers each time.', 'Gives a realistic, not inflated, reach figure.'],
       ['Reach 3+', 'Estimated from reach and average frequency using a standard statistical spread (Poisson).', 'A common measure of effective repetition.']],
     tblOpt({ x: M, y: 1.8, w: CW, colW: [1.8, 6.0, CW - 7.8], fontSize: 11 }));
@@ -530,7 +530,7 @@ export async function buildDeck(S, simulate, opts = {}) {
     s = content('Appendix · Assumptions', 'Planning assumptions that can be changed in the tool');
     const ab = A.chs.length >= 2 ? S.getD(A.chs[0].ch, A.chs[1].ch) : null;
     s.addTable([[th('Assumption'), th('Value used'), th('What it means')],
-      ['Cost per rating point', `LKR ${ni(P.cprp)} (${P.spotLen} sec)`, 'Price of one rating point; replace with confirmed rates.'],
+      ['Cost per rating point', `LKR ${ni(P.cprp)} (30 sec)`, 'Price of one rating point; replace with confirmed rates.'],
       ['Minimum spot rate', `LKR ${ni(P.minRate || 0)}`, 'Even small shows cost at least this much per spot.'],
       ['Channel overlap', ab != null ? `${cn(A.chs[0].ch)}–${cn(A.chs[1].ch)}: ${nf(ab * 100, 0)}%` : '—', 'Share of the smaller audience that also watches the other channel.'],
       ['Overlap within a channel', `${nf(S.DINTRA * 100, 0)}%`, 'Viewers of one programme who also watch others on the same channel.'],

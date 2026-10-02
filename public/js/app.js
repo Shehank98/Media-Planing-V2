@@ -1,8 +1,9 @@
 import {
   DAYS, DS, DIMS, DPS, daypart, esc, nf, ni, hl, band, chName, pn, fmtDate, dayDiff, lkr,
   parseRows, grp, avgT, avgR, avgS, ciOf, steadiness, summarize, mkGetD, dkey, netReach, uni,
-  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV, STRATS, buildSchedule
+  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV, STRATS, buildSchedule, campaignDays, creativeMix, avgLen
 } from './engine.js';
+import { exportScheduleXlsx } from './xlsx.js';
 import { makeDemoRows } from './demo.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './store.js';
 import { buildContext, askRemote, askLocal, splitAction } from './ai.js';
@@ -16,7 +17,8 @@ const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d
 const DEFAULT_P = {
   budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [],
   strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
-  weeks: 4, start: nextMonday(), pacing: 'even', same: 'roadblock', repQ: 40
+  weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'roadblock', repQ: 40,
+  creatives: [{ name: 'Creative A', dur: 30, share: 100 }], rates: {}, disc: {}, sscl: 2.5, vat: 18
 };
 const S = {
   ROWS: [], F: [], CH: [], CATS: [], SPAN: ['', ''], HRS: [0, 23], meta: null,
@@ -29,10 +31,15 @@ const S = {
   DR: { levels: ['ch', 'cat', 'p'], open: new Set() },
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
-  fv: 'weeks', sched: null, SD: { h: null, sdDays: 'all', sdScope: 'plan' }, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
+  fv: 'weeks', sched: null, SCH: { ch: null }, SD: { h: null, sdDays: 'all', sdScope: 'plan' }, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
   chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
+// Older saved plans: derive the campaign end date and creatives.
+if (!S.P.end) S.P.end = campaignDays(S.P).end;
+if (!Array.isArray(S.P.creatives) || !S.P.creatives.length) S.P.creatives = [{ name: 'Creative A', dur: S.P.spotLen || 30, share: 100 }];
+['rates', 'disc'].forEach(k => { if (!S.P[k] || typeof S.P[k] !== 'object') S.P[k] = {}; });
+const mixText = P => { const m = creativeMix(P); return m.map(c => `${c.name} ${c.dur}s${m.length > 1 ? ' (' + nf(c.w * 100, 0) + '%)' : ''}`).join(', '); };
 S.getD = getD;
 const charts = {};
 const savePlan = () => lsSet('plan', S.P);
@@ -334,6 +341,7 @@ const TIER_NAMES = { 1: 'Peak impact', 2: 'Efficiency anchors', 3: 'Frequency bu
 const TIER_COL = { 1: 'var(--c1)', 2: 'var(--c2)', 3: 'var(--c3)' };
 const tierTag = t => `<span class="tag tier t${t}">T${t}</span>`;
 function vPlan(el) {
+  killCharts('c-');
   const P = S.P, f = S.FS;
   const chOn = S.CH.filter(c => f.ch.has(c));
   const num = (k, o = {}) => `<input type="number" data-p="${k}" value="${P[k]}" ${o.min != null ? `min="${o.min}"` : ''} ${o.max != null ? `max="${o.max}"` : ''} step="${o.step || 1}">`;
@@ -357,11 +365,16 @@ function vPlan(el) {
       <div class="panel settings"><div class="ph"><h3>Plan settings</h3><span class="push"><button class="link" id="p-reset">Reset</button></span></div><div class="pb">
         <details open><summary>Budget and cost</summary>
           <label class="fld"><span>Budget (LKR)</span>${num('budget', { min: 0, step: 500000 })}</label>
-          <div class="two"><label class="fld"><span>Cost per rating point</span>${num('cprp', { min: 1000, step: 1000 })}</label>
-          <label class="fld"><span>Spot length</span><select data-p="spotLen">${[10, 15, 20, 30, 45, 60].map(s => `<option ${s === P.spotLen ? 'selected' : ''} value="${s}">${s} sec</option>`).join('')}</select></label></div>
-          <label class="fld"><span>Minimum spot rate (LKR)</span>${num('minRate', { min: 0, step: 1000 })}</label>
+          <div class="two"><label class="fld"><span>Cost per rating point (30 sec)</span>${num('cprp', { min: 1000, step: 1000 })}</label>
+          <label class="fld"><span>Minimum 30-sec rate</span>${num('minRate', { min: 0, step: 1000 })}</label></div>
+          <p class="hint">Estimated 30-sec rate = the higher of the two × TVR. Type real rate cards and channel discounts in the <button class="link" data-tab-go="schedule">Schedule</button> tab.</p>
           <label class="fld"><span>Budget change <b id="l-cut">${P.cut ? '−' + P.cut + '%' : 'none'}</b></span><input type="range" id="p-cut" min="0" max="50" step="5" value="${P.cut}"></label>
           <label class="fld"><span>Target net reach <b id="l-tgt">${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="90" step="1" value="${P.target}"></label>
+        </details>
+        <details open><summary>Creatives</summary>
+          <div class="crs">${P.creatives.map((c, i) => `<div class="cr-row"><input type="text" data-cr="${i}" data-f="name" value="${esc(c.name)}" placeholder="Brand / creative" aria-label="Creative name"><select data-cr="${i}" data-f="dur" aria-label="Duration">${[5, 10, 15, 20, 25, 30, 45, 60].map(d => `<option value="${d}" ${+c.dur === d ? 'selected' : ''}>${d}s</option>`).join('')}</select><input type="number" min="0" max="100" data-cr="${i}" data-f="share" value="${c.share}" aria-label="Rotation share %"><span class="muted">%</span>${P.creatives.length > 1 ? `<button class="ico x" data-cr-del="${i}" title="Remove creative" aria-label="Remove creative">${ICO_X}</button>` : '<span></span>'}</div>`).join('')}</div>
+          <div class="inl" style="justify-content:space-between;margin-top:6px"><button class="btn sm" data-cr-add>+ Add creative</button><span class="muted" id="l-crsum">Shares ${P.creatives.reduce((a, c) => a + (+c.share || 0), 0)}% · avg ${nf(avgLen(P), 1)} sec</span></div>
+          <p class="hint">Cost of a spot = 30-sec rate × duration ÷ 30. Spots are rotated between creatives by share.</p>
         </details>
         <details open><summary>Strategy and tiers</summary>
           <div class="fld">${seg('strategy', { strategy: strat }, Object.entries(STRATS).map(([k, v]) => [k, v.label]))}${strat ? '' : ' <span class="tag">Custom</span>'}</div>
@@ -383,7 +396,9 @@ function vPlan(el) {
           <p class="hint">Share of spend by the program's usual start hour. Limits for dayparts outside the brief are ignored.</p>
         </details>
         <details><summary>Flighting</summary>
-          <div class="two"><label class="fld"><span>Flight start</span><input type="date" data-p="start" value="${P.start}"></label><label class="fld"><span>Weeks</span>${num('weeks', { min: 1, max: 13 })}</label></div>
+          <div class="two"><label class="fld"><span>Campaign start</span><input type="date" data-p="start" value="${P.start}"></label><label class="fld"><span>Campaign end</span><input type="date" data-p="end" value="${P.end}" min="${P.start}"></label></div>
+          <p class="hint" style="margin-top:-6px">${campaignDays(P).days.length} days · ${campaignDays(P).W} weeks</p>
+          <label class="fld"><span>Max spots per programme per day</span><select data-p="perDay">${[1, 2, 3].map(n => `<option value="${n}" ${+P.perDay === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
           <div class="fld"><span>Pacing</span>${seg('pacing', P, [['even', 'Even (drip)'], ['burst', 'Burst'], ['pulse', 'Pulse']])}</div>
           <div class="fld"><span>Same-hour spots on rival channels</span>${seg('same', P, [['roadblock', 'Roadblock'], ['stagger', 'Stagger']])}</div>
           <p class="hint">${P.same === 'roadblock' ? 'Roadblock: rival channels at the same hour on the same night. One viewer cannot watch both, so this reaches more different people.' : 'Stagger: rival same-hour spots on different nights. The same viewers see the ad more often (frequency).'}</p>
@@ -510,11 +525,11 @@ function renderFlight() {
   const A = S.cur, Sc = S.sched, P = S.P, el = $('#pl-flight');
   if (!el || !Sc) return;
   const pl = { even: 'even (drip)', burst: 'burst, front-loaded', pulse: 'pulse, on/off weeks' }[P.pacing];
-  $('#fl-sub').textContent = `${A.W} weeks from ${fmtDate(Sc.start)} · ${pl} · max ${P.capWk}/week per program`;
+  $('#fl-sub').textContent = `${fmtDate(Sc.start)} – ${fmtDate(Sc.end)} (${A.W} weeks) · ${pl} · max ${P.capWk}/week, ${P.perDay}/day per programme`;
   const wkDate = w => { const d = new Date(new Date(Sc.start + 'T12:00:00').getTime() + w * 7 * 864e5); return fmtDate(d.toISOString().slice(0, 10)).slice(0, 6); };
   if (S.fv === 'days') {
     const rows = Sc.rows;
-    el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th>Spots</th><th>Cost</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td></tr>`).join('')}</tbody></table></div>
+    el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th class="l">Creative</th><th>Spots</th><th>Cost</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td class="l">${esc(Sc.mix[r.cr].name)} · ${r.dur}s</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td></tr>`).join('')}</tbody></table></div>
       <p class="hint">${Sc.clashes} night${Sc.clashes === 1 ? ' has' : 's have'} rival channels in the same hour (${P.same === 'roadblock' ? 'roadblock, by design' : 'kept low by staggering'}). Days follow each program's air days in the data.</p>`;
     return;
   }
@@ -532,8 +547,8 @@ function renderFlight() {
 }
 function scheduleCSV() {
   const r = S.sched.rows;
-  return toCSV(['Week', 'Date', 'Day', 'Time band', 'Channel', 'Program', 'Tier', 'Spots', 'Spot length (sec)', 'Cost LKR'],
-    r.map(x => [x.week, x.date, x.day, band(x.hour), chName(x.ch), pn(x.p), 'Tier ' + x.tier, x.spots, S.P.spotLen, Math.round(x.cost)]));
+  return toCSV(['Week', 'Date', 'Day', 'Time band', 'Channel', 'Program', 'Tier', 'Creative', 'Duration (sec)', 'Spots', 'Cost LKR'],
+    r.map(x => [x.week, x.date, x.day, band(x.hour), chName(x.ch), pn(x.p), 'Tier ' + x.tier, S.sched.mix[x.cr].name, x.dur, x.spots, Math.round(x.cost)]));
 }
 function memo(A, base) {
   const L = [], P = S.P;
@@ -546,7 +561,7 @@ function memo(A, base) {
     const a = A.chs[0], b = A.chs[1], d = getD(a.ch, b.ch);
     L.push(`<p><b>Duplication:</b> ${esc(chName(a.ch))} and ${esc(chName(b.ch))} share about ${nf(d * 100, 0)}% of viewers in this model; ${nf(A.loss * 100, 0)}% of gross reach is overlap.</p>`);
   }
-  L.push(`<p><b>Delivery:</b> ${ni(A.spots)} spots of ${P.spotLen} sec, net reach ${nf(A.net, 1)}%, reach 3+ ${nf(A.r3, 1)}%, average frequency ${nf(A.freq, 1)}x.</p>`);
+  L.push(`<p><b>Delivery:</b> ${ni(A.spots)} spots (${esc(mixText(P))}), net reach ${nf(A.net, 1)}%, reach 3+ ${nf(A.r3, 1)}%, average frequency ${nf(A.freq, 1)}x.</p>`);
   if (S.sched) L.push(`<p><b>Flighting:</b> ${A.W} weeks from ${fmtDate(S.sched.start)}, ${P.pacing} pacing (${S.sched.weeks.map(w => w.spots).join(' / ')} spots per week), max ${P.capWk} spots per program per week. Rival same-hour spots are ${P.same === 'roadblock' ? 'roadblocked on the same nights for reach' : 'staggered across nights for frequency'}.</p>`);
   if (P.cut > 0) L.push(`<p><b>Budget cut of ${P.cut}%:</b> net reach ${nf(base.net, 1)}% → ${nf(A.net, 1)}%, reach 3+ ${nf(base.r3, 1)}% → ${nf(A.r3, 1)}%. The cut removes repeat spots first, so frequency falls faster than reach.</p>`);
   const rv = A.kept.filter(x => x.role === 'review');
@@ -554,6 +569,76 @@ function memo(A, base) {
   return L.join('');
 }
 const memoText = () => $('#pl-memo') ? $('#pl-memo').innerText : '';
+
+/* ---------- Schedule (booking sheet per channel) ---------- */
+const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function scheduleModel() {
+  const A = S.cur, Sc = S.sched, P = S.P;
+  const sscl = (+P.sscl || 0) / 100, vat = (+P.vat || 0) / 100;
+  const chans = A.chs.map(c => {
+    const progs = A.kept.filter(x => x.ch === c.ch).sort((a, b) => (a.from || '') < (b.from || '') ? -1 : 1);
+    const sections = Sc.mix.map((m, i) => ({ m, i, rows: progs.map(x => {
+      const rs = Sc.rows.filter(r => r.key === x.key && r.cr === i);
+      const byDate = {}; rs.forEach(r => byDate[r.date] = (byDate[r.date] || 0) + r.spots);
+      const spots = rs.reduce((a, r) => a + r.spots, 0), rc = x.rate30 * m.dur / 30, ng = x.net30 * m.dur / 30;
+      return { x, byDate, spots, rc, ng, trc: rc * spots, tng: ng * spots };
+    }).filter(r => r.spots > 0) })).filter(sec => sec.rows.length);
+    const all = sections.flatMap(sec => sec.rows);
+    const net = all.reduce((a, r) => a + r.tng, 0), rcT = all.reduce((a, r) => a + r.trc, 0), spots = all.reduce((a, r) => a + r.spots, 0);
+    const tS = net * sscl, tV = (net + tS) * vat;
+    return { ch: c.ch, sections, net, rcT, spots, sscl: tS, vat: tV, total: net + tS + tV, disc: +(P.disc[c.ch] || 0) };
+  });
+  const T = k => chans.reduce((a, c) => a + c[k], 0);
+  return { chans, days: Sc.days, mix: Sc.mix, sscl, vat, tot: { net: T('net'), rcT: T('rcT'), spots: T('spots'), sscl: T('sscl'), vat: T('vat'), total: T('total') } };
+}
+function vSchedule(el) {
+  const A = S.cur, P = S.P;
+  if (!A || !S.sched) { el.innerHTML = `<div class="empty"><b>No plan to schedule yet</b><p>Build a plan in the Planner first.</p><button class="btn pri" data-tab-go="plan">Go to Planner</button></div>`; return; }
+  const M = scheduleModel(), meta = lsGet('deckMeta', {});
+  if (!S.SCH.ch || !M.chans.find(c => c.ch === S.SCH.ch)) S.SCH.ch = M.chans[0].ch;
+  const C = M.chans.find(c => c.ch === S.SCH.ch), days = M.days;
+  const months = []; days.forEach(d => { const k = d.iso.slice(0, 7); const l = months[months.length - 1]; if (l && l.k === k) l.n++; else months.push({ k, n: 1, label: MONS[+k.slice(5) - 1] + ' ' + k.slice(0, 4) }); });
+  const wk = d => d.day === 'Saturday' || d.day === 'Sunday';
+  const L = v => ni(Math.round(v));
+  const head = `<tr class="h1"><th class="sx" colspan="12"></th>${months.map(m => `<th class="mth" colspan="${m.n}">${m.label}</th>`).join('')}</tr>
+    <tr><th class="sx l">Programme</th><th class="l">Day</th><th>From</th><th>To</th><th>Dur</th><th>Spots</th><th class="l">Brand</th><th title="Rate card for 30 seconds. Estimated values in italics: type the real rate.">Rate card 30s</th><th>Rate card</th><th>Negotiated</th><th>Total rate card</th><th>Total negotiated</th>${days.map(d => `<th class="dc ${wk(d) ? 'we' : ''}">${d.day[0]}<br>${+d.iso.slice(8)}</th>`).join('')}</tr>`;
+  const body = C.sections.map(sec => `<tr class="secr"><td class="sx l" colspan="12">${esc(sec.m.name)} · ${sec.m.dur} sec</td>${days.map(d => `<td class="${wk(d) ? 'we' : ''}"></td>`).join('')}</tr>` +
+    sec.rows.map(r => `<tr><td class="sx l"><button class="nm" ${xa({ ch: r.x.ch, p: r.x.p })}>${esc(pn(r.x.p))}</button></td><td class="l">${r.x.pattern}</td><td>${r.x.from}</td><td>${r.x.to}</td><td>${sec.m.dur}</td><td><b>${r.spots}</b></td><td class="l">${esc(sec.m.name)}</td>
+      <td><input class="rate ${r.x.rateSet ? '' : 'est'}" data-rate="${esc(r.x.key)}" value="${Math.round(r.x.rate30)}" title="${r.x.rateSet ? 'Your rate card value' : 'Estimated: CPRP × TVR (min. rate). Type the real 30-sec rate.'}"></td>
+      <td>${L(r.rc)}</td><td>${L(r.ng)}</td><td>${L(r.trc)}</td><td><b>${L(r.tng)}</b></td>${days.map(d => { const v = r.byDate[d.iso]; return `<td class="dc ${wk(d) ? 'we' : ''} ${v ? 'on' : ''}">${v || ''}</td>`; }).join('')}</tr>`).join('')).join('');
+  const dayTot = days.map(d => C.sections.reduce((a, sec) => a + sec.rows.reduce((b, r) => b + (r.byDate[d.iso] || 0), 0), 0));
+  const foot = `<tr class="tot"><td class="sx l" colspan="5">${esc(chName(C.ch))} total</td><td>${C.spots}</td><td></td><td></td><td></td><td></td><td>${L(C.rcT)}</td><td>${L(C.net)}</td>${dayTot.map((v, i) => `<td class="dc ${wk(days[i]) ? 'we' : ''}">${v || ''}</td>`).join('')}</tr>`;
+  const sm = (l, v, cls = '') => `<div class="m ${cls}"><small>${l}</small><b>${v}</b></div>`;
+  el.innerHTML = `
+  <div class="vhead"><div><h2>Booking schedule</h2><p>Day-by-day spots per channel, by creative, ready to send to channels. Same layout as the Excel export.</p></div>
+    <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule</button></span></div>
+  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Spots', ni(M.tot.spots))}${sm('Rate card value', 'LKR ' + L(M.tot.rcT))}${sm('Negotiated (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
+  <div class="grid g2">
+    ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
+      <label class="fld"><span>Client</span><input type="text" data-meta="client" value="${esc(meta.client || '')}"></label>
+      <label class="fld"><span>Brand</span><input type="text" data-meta="brand" value="${esc(meta.brand || '')}"></label>
+      <label class="fld"><span>Campaign</span><input type="text" data-meta="campaign" value="${esc(meta.campaign || '')}"></label>
+      <label class="fld"><span>Primary TG</span><input type="text" data-meta="tg" value="${esc(meta.tg || '')}" placeholder="e.g. 16-50 Male & Female SEC All"></label>
+      <label class="fld"><span>SSCL %</span>${`<input type="number" data-p="sscl" min="0" max="20" step="0.5" value="${P.sscl}">`}</label>
+      <label class="fld"><span>VAT %</span>${`<input type="number" data-p="vat" min="0" max="30" step="0.5" value="${P.vat}">`}</label></div>
+      <p class="hint">Change the campaign dates, creatives or caps in <button class="link" data-tab-go="plan">Planner settings</button>; the schedule is rebuilt automatically.</p>`)}
+    ${panel('By channel', 'negotiated rate = rate card × (1 − discount)', `<div class="tw"><table><thead><tr><th>Channel</th><th>Discount %</th><th>Spots</th><th>Rate card</th><th>Negotiated</th><th>With taxes</th></tr></thead><tbody>
+      ${M.chans.map(c => `<tr><td>${dot(c.ch)}${esc(chName(c.ch))}</td><td><input class="rate" type="number" min="0" max="95" step="1" data-disc="${esc(c.ch)}" value="${c.disc}" style="width:64px"></td><td>${c.spots}</td><td>${L(c.rcT)}</td><td><b>${L(c.net)}</b></td><td>${L(c.total)}</td></tr>`).join('')}
+      <tr class="tot"><td>Total</td><td></td><td>${M.tot.spots}</td><td>${L(M.tot.rcT)}</td><td><b>${L(M.tot.net)}</b></td><td>${L(M.tot.total)}</td></tr></tbody></table></div>
+      <p class="hint">Changing a rate or discount changes spot costs, so the plan is re-optimised.</p>`)}
+  </div>
+  <div class="panel"><div class="ph"><h3>Channel sheet</h3><span class="push"><div class="chips">${M.chans.map(c => `<button class="chip ${c.ch === C.ch ? 'on' : ''}" data-sch-ch="${esc(c.ch)}">${esc(chName(c.ch))} · ${c.spots}</button>`).join('')}</div></span></div>
+    <div class="pb"><div class="tw sched-wrap"><table class="sched"><thead>${head}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
+    <div class="taxes"><span>Total negotiated <b>LKR ${L(C.net)}</b></span><span>SSCL ${P.sscl}% <b>LKR ${L(C.sscl)}</b></span><span>VAT ${P.vat}% <b>LKR ${L(C.vat)}</b></span><span>Total with taxes <b>LKR ${L(C.total)}</b></span></div>
+    <p class="hint">Rate card 30s in <i>italics</i> is estimated from the rating; type the channel's rate card to replace it. Shaded columns are weekends. Click a programme for its ratings detail.</p></div></div>`;
+}
+async function runXlsx(btn) {
+  if (!S.cur || !S.sched) { toast('Build a plan first'); return; }
+  btn.disabled = true; const t = btn.textContent; btn.textContent = 'Building…';
+  try { const name = await exportScheduleXlsx(scheduleModel(), { meta: lsGet('deckMeta', {}), P: S.P, start: S.sched.start, end: S.sched.end, net: S.cur.net, r3: S.cur.r3 }); toast('Downloaded ' + name); }
+  catch (e) { toast('Excel export failed: ' + e.message); }
+  finally { btn.disabled = false; btn.textContent = t; }
+}
 
 /* ---------- Scenarios ---------- */
 function snapshot(name, A, P, FS) {
@@ -879,7 +964,8 @@ function applyDetailFilter() {
 }
 
 /* ---------- render control ---------- */
-const VIEWS = { overview: vOverview, explore: vExplore, drill: vDrill, plan: vPlan, scen: vScen, dup: vDup, data: vData };
+const VIEWS = { overview: vOverview, explore: vExplore, drill: vDrill, plan: vPlan, schedule: vSchedule, scen: vScen, dup: vDup, data: vData };
+function refreshPlanViews() { if (S.TAB === 'plan') updatePlan(); else if (S.TAB === 'schedule') vSchedule($('#v-schedule')); }
 function renderActive() {
   killCharts('c-');
   document.querySelectorAll('.view').forEach(v => v.classList.remove('on'));
@@ -1097,6 +1183,10 @@ document.addEventListener('click', e => {
   const t = e.target;
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
+  if (t.closest('[data-cr-add]')) { S.P.creatives.push({ name: 'Creative ' + String.fromCharCode(65 + S.P.creatives.length), dur: 10, share: 0 }); savePlan(); vPlan($('#v-plan')); return; }
+  if ((el = t.closest('[data-cr-del]'))) { S.P.creatives.splice(+el.dataset.crDel, 1); S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return; }
+  if ((el = t.closest('[data-sch-ch]'))) { S.SCH.ch = el.dataset.schCh; vSchedule($('#v-schedule')); return; }
+  if (t.closest('#sch-xlsx')) { runXlsx(t.closest('#sch-xlsx')); return; }
   if ((el = t.closest('[data-bkt]'))) { S.BK.tier = el.dataset.bkt; renderBasket(); return; }
   if ((el = t.closest('[data-bkopen]'))) { const c = el.dataset.bkopen; S.BK.open.has(c) ? S.BK.open.delete(c) : S.BK.open.add(c); renderBasket(); return; }
   if (t.closest('[data-flall]')) { S.BK.flAll = !S.BK.flAll; renderFlight(); return; }
@@ -1204,7 +1294,18 @@ document.addEventListener('change', e => {
     S.DR.levels = L.slice(0, 3); S.DR.open.clear(); vDrill($('#v-drill')); return;
   }
   if (t.dataset.split !== undefined) { S.P.split[t.dataset.split] = Math.max(0, Math.min(100, +t.value || 0)); savePlan(); recalc(); updatePlan(); return; }
-  if (t.dataset.p !== undefined && t.type !== 'number') { S.P[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value; savePlan(); recalc(); updatePlan(); return; }
+  if (t.dataset.p !== undefined && t.type !== 'number') {
+    S.P[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value;
+    if (S.P.end && S.P.end < S.P.start) S.P.end = S.P.start;
+    savePlan(); recalc(); if (t.type === 'date' && S.TAB === 'plan') vPlan($('#v-plan')); else refreshPlanViews(); return;
+  }
+  if (t.dataset.cr !== undefined) {
+    const c = S.P.creatives[+t.dataset.cr], f = t.dataset.f; c[f] = f === 'name' ? t.value.trim() || 'Creative' : Math.max(0, +t.value || 0);
+    S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return;
+  }
+  if (t.dataset.rate !== undefined) { const v = +String(t.value).replace(/[^\d.]/g, ''); if (v > 0) S.P.rates[t.dataset.rate] = v; else delete S.P.rates[t.dataset.rate]; savePlan(); recalc(); refreshPlanViews(); return; }
+  if (t.dataset.disc !== undefined) { S.P.disc[t.dataset.disc] = Math.min(95, Math.max(0, +t.value || 0)); savePlan(); recalc(); refreshPlanViews(); return; }
+  if (t.dataset.meta !== undefined) { const m = lsGet('deckMeta', {}); m[t.dataset.meta] = t.value; lsSet('deckMeta', m); return; }
   if (t.id === 'd-rep') { S.P.repQ = Math.min(90, Math.max(0, +t.value || 0)); savePlan(); recalc(); return; }
   if (t.dataset && t.dataset.a !== undefined && t.closest('.mx')) {
     S.DUP[dkey(t.dataset.a, t.dataset.b)] = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dup', S.DUP); recalc(); killCharts('c-'); vDup($('#v-dup')); return;
@@ -1217,7 +1318,7 @@ document.addEventListener('input', e => {
   if (t.id === 'f-q') { S.FS.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(applyFilters, 250); return; }
   if (t.id === 'f-catq') { fillCats(t.value); return; }
   if (t.id === 'dq') { S.DQ = t.value; S.DPAGE = 0; clearTimeout(qTimer); qTimer = setTimeout(() => { vData($('#v-data')); const i = $('#dq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); return; }
-  const upd = () => { savePlan(); clearTimeout(pTimer); pTimer = setTimeout(() => { recalc(); updatePlan(); }, 150); };
+  const upd = () => { savePlan(); clearTimeout(pTimer); pTimer = setTimeout(() => { recalc(); refreshPlanViews(); }, 150); };
   if (t.dataset.p !== undefined && t.type === 'number') { const v = +t.value; if (t.value !== '' && isFinite(v)) { P[t.dataset.p] = v; upd(); } return; }
   if (t.dataset.pa !== undefined) {
     const v = Math.max(0, Math.min(100, +t.value || 0)); P[t.dataset.pa][+t.dataset.i] = v;

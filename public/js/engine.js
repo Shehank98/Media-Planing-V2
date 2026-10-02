@@ -177,6 +177,33 @@ export function channelStats(rows) {
   return cs;
 }
 
+// Campaign calendar: every date from start to end (inclusive), with weekday and week index.
+export function campaignDays(P) {
+  const iso = d => d.toISOString().slice(0, 10);
+  const s0 = P.start || iso(new Date());
+  let e0 = P.end || iso(new Date(new Date(s0 + 'T12:00:00').getTime() + ((P.weeks || 4) * 7 - 1) * 864e5));
+  if (e0 < s0) e0 = s0;
+  const s = new Date(s0 + 'T12:00:00'), n = Math.min(371, Math.round((new Date(e0 + 'T12:00:00') - s) / 864e5) + 1);
+  const days = Array.from({ length: n }, (_, i) => { const d = new Date(s.getTime() + i * 864e5); return { iso: iso(d), day: DAYS[(d.getDay() + 6) % 7], w: Math.floor(i / 7) }; });
+  return { start: s0, end: days[days.length - 1].iso, days, W: Math.ceil(n / 7) };
+}
+// Creatives (brand / version, duration in seconds, rotation share). Shares are normalised to 1.
+export function creativeMix(P) {
+  const list = (P.creatives && P.creatives.length ? P.creatives : [{ name: 'Creative A', dur: P.spotLen || 30, share: 100 }])
+    .map(c => ({ name: String(c.name || 'Creative').trim() || 'Creative', dur: Math.max(1, +c.dur || 30), share: Math.max(0, +c.share || 0) }));
+  const tot = list.reduce((a, c) => a + c.share, 0) || list.length;
+  list.forEach(c => c.w = tot === list.length && !list.some(x => x.share) ? 1 / list.length : c.share / tot);
+  return list;
+}
+export const avgLen = P => creativeMix(P).reduce((a, c) => a + c.w * c.dur, 0);
+const dayPattern = days => {
+  const has = d => days.includes(d), wd = DAYS.slice(0, 5).every(has), we = has('Saturday') && has('Sunday');
+  if (wd && we) return 'MON - SUN'; if (wd && !has('Saturday') && !has('Sunday')) return 'MON TO FRI';
+  if (we && days.length === 2) return 'SAT - SUN';
+  return days.map(d => d.slice(0, 3).toUpperCase()).join(', ');
+};
+const modeOf = arr => { const c = {}; arr.forEach(v => { if (v) c[v] = (c[v] || 0) + 1; }); return Object.keys(c).sort((a, b) => c[b] - c[a])[0] || ''; };
+
 // Candidate programs on the chosen channels, each placed in a tier.
 // Programs below the minimum TVR (minTvrPlan) are not candidates unless locked.
 // Tier thresholds are percentiles of the candidates' average TVR:
@@ -199,6 +226,8 @@ export function planCalc(rows, P) {
       ch: c.ch, p: g.k, key: c.ch + '||' + g.k, n: g.n, mean: avgT(g), max: g.mx, rp: avgR(g) || avgT(g) * 1.4, ci: ciOf(g),
       hour: modeHour(g.hc), days: DAYS.filter(d => g.dc[d]), cat: g.mxr.cat, dur: g.sD / g.n, locked: lock.has(c.ch + '||' + g.k)
     }));
+    const chRows = rows.filter(r => r.ch === c.ch);
+    pg.forEach(x => { const pr = chRows.filter(r => r.p === x.p); x.from = modeOf(pr.map(r => r.s)); x.to = modeOf(pr.map(r => r.e)); x.pattern = dayPattern(x.days); });
     let cand = pg.filter(x => x.n >= 2); if (cand.length < 3) cand = pg;
     cand = cand.filter(x => !excl.has(x.key) && x.mean > 0 && x.mean >= floor);
     pg.forEach(x => { if (x.locked && !cand.includes(x)) cand.push(x); });
@@ -212,6 +241,12 @@ export function planCalc(rows, P) {
       x.dp = daypart(x.hour);
       x.sf = x.n < 2 ? .7 : .6 + .4 * Math.min(x.ci, 5) / 5; // steadiness factor
       x.role = x.ci < 3 && x.n >= 2 ? 'review' : (x.tier === 1 && x.ci >= 5) ? 'anchor' : 'support';
+      // Rates: estimated 30-sec rate card (or the planner's own figure), less the channel discount.
+      x.est30 = Math.max(Math.max(0, P.minRate || 0), (P.cprp > 0 ? P.cprp : 25000) * x.mean);
+      x.rate30 = P.rates && P.rates[x.key] > 0 ? +P.rates[x.key] : x.est30;
+      x.rateSet = !!(P.rates && P.rates[x.key] > 0);
+      x.disc = Math.min(95, Math.max(0, +(P.disc && P.disc[x.ch]) || 0)) / 100;
+      x.net30 = x.rate30 * (1 - x.disc);
     });
   }
   return { cs, sel, items, thr };
@@ -224,14 +259,16 @@ export function planCalc(rows, P) {
 // its budget, then any leftover across tiers. Caps: spots per program per week, programs per
 // channel per tier, daypart maximums, manual channel shares and the budget itself.
 export function scen(plan, f, P, getD, dIntra, trace) {
-  const B = P.budget * f, W = Math.max(1, Math.round(P.weeks || 4));
+  const B = P.budget * f, cal = campaignDays(P), W = cal.W;
   const wts = pacingWeights(P.pacing, W), act = wts.filter(w => w > 0).length;
-  const capTot = Math.max(1, Math.round(P.capWk || 3)) * act;
+  const capWk = Math.max(1, Math.round(P.capWk || 3)), perDay = Math.max(1, Math.round(P.perDay || 1));
+  const lenF = avgLen(P) / 30;
+  // Spots a programme can take in each week: its air dates in the campaign x spots per day, at most the weekly cap.
+  const capsFor = x => Array.from({ length: W }, (_, w) => wts[w] > 0 ? Math.min(capWk, cal.days.filter(d => d.w === w && (!x.days.length || x.days.includes(d.day))).length * perDay) : 0);
   const q = Math.min(.95, Math.max(0, (P.repQ ?? 40) / 100));
-  const len = (P.spotLen || 30) / 30, cprp = P.cprp > 0 ? P.cprp : 25000, floor = Math.max(0, P.minRate || 0);
   const alpha = (STRATS[P.strategy] || STRATS.balanced).a;
   const tiers = (P.tiers && P.tiers.length === 3 ? P.tiers : STRATS.balanced.t).map(v => Math.max(0, +v || 0));
-  const items = plan.items.map(x => ({ ...x, cost: Math.max(floor, cprp * x.mean * len), cnt: 0 }));
+  const items = plan.items.map(x => { const capW = capsFor(x); return { ...x, capW, capTot: capW.reduce((a, b) => a + b, 0), cost: x.net30 * lenF, cnt: 0 }; });
   const byCh = new Map(); items.forEach(x => { if (!byCh.has(x.ch)) byCh.set(x.ch, []); byCh.get(x.ch).push(x); });
   // Reach of one program after k spots: each repeat spot adds q x the previous spot's new reach.
   const progR = (x, k) => k <= 0 ? 0 : x.rp * (1 - Math.pow(q, k)) / (1 - q);
@@ -252,7 +289,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const tierSp = [0, 0, 0, 0], dpSp = {}, chSp = {}, chN = {};
   DPS.forEach(d => dpSp[d] = 0); byCh.forEach((_, c) => { chSp[c] = 0; });
   const E = 1e-6;
-  const ok = x => spent + x.cost <= B + E && x.cnt < capTot && (x.cnt > 0 || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
+  const ok = x => spent + x.cost <= B + E && x.cnt < x.capTot && (x.cnt > 0 || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
     dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && (chFix[x.ch] == null || chSp[x.ch] + x.cost <= chFix[x.ch] * B + E);
   const gain = x => { const R = chR(x.ch, x, x.cnt + 1); return (alpha * (net(x.ch, R) - curNet) + (1 - alpha) * x.mean) * x.sf / x.cost; };
   let phase = '';
@@ -264,7 +301,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
       if (!best) break; take(best, bg);
     }
   };
-  phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < act && ok(x)) take(x, null); });
+  phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < Math.min(act, x.capTot) && ok(x)) take(x, null); });
   phase = 'minimums';
   Object.keys(chFix).forEach(ch => fill(byCh.get(ch) || [], x => chSp[ch] + x.cost <= chFix[ch] * B + E));
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
@@ -272,7 +309,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   phase = 'leftover'; fill(items);
 
   const tot = spent || 1;
-  const kept = items.filter(x => x.cnt > 0).map(x => ({ ...x, spots: x.cnt, bud: x.cnt * x.cost, views: x.cnt * x.mean, R: progR(x, x.cnt), k: x.cnt * x.cost / tot, atCap: x.cnt >= capTot }))
+  const kept = items.filter(x => x.cnt > 0).map(x => ({ ...x, spots: x.cnt, bud: x.cnt * x.cost, views: x.cnt * x.mean, R: progR(x, x.cnt), k: x.cnt * x.cost / tot, atCap: x.cnt >= x.capTot }))
     .sort((a, b) => b.bud - a.bud);
   const m = new Map();
   kept.forEach(x => { let c = m.get(x.ch); if (!c) { c = { ch: x.ch, w: 0, bud: 0, progs: [], spots: 0, views: 0, R: chRv.get(x.ch) }; m.set(x.ch, c); } c.w += x.k; c.bud += x.bud; c.spots += x.spots; c.views += x.views; c.progs.push(x); });
@@ -281,7 +318,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   return {
     B, f, spent, unspent: Math.max(0, B - spent), kept, dropped: [], chs, gross, net: curNet,
     loss: gross > 0 ? (gross - curNet) / gross : 0, eff: B > 0 ? curNet / (B / 1e6) : 0, views, spots: kept.reduce((a, x) => a + x.spots, 0),
-    freq: curNet > 0 && views > 0 ? views / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? views / curNet : 0, 3), capTot, act, W, thr: plan.thr, relaxed,
+    freq: curNet > 0 && views > 0 ? views / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? views / curNet : 0, 3), capTot: capWk * act, act, W, cal, thr: plan.thr, relaxed,
     tiers: [1, 2, 3].map(t => ({ t, target: tiers[t - 1], actual: tierSp[t] / tot * 100, n: kept.filter(x => x.tier === t).length, avail: items.filter(x => x.tier === t).length })),
     dps: DPS.map(d => ({ d, present: present.has(d), min: dpMin[d] * 100, max: dpMax[d] * 100, actual: dpSp[d] / tot * 100 }))
   };
@@ -298,47 +335,62 @@ export function reachAtLeast(net, freq, n = 3) {
   return net * (1 - cdf) / (1 - Math.exp(-l));
 }
 
-// Weekly flighting: spreads each program's spots over the flight using the pacing weights
-// (never more than the weekly cap), then places them on the program's air days.
-// Roadblock puts competing same-hour spots on the same nights (different viewers, more reach);
-// stagger puts them on different nights (same viewers more often, more frequency).
+// Schedule: spreads each programme's spots over the campaign weeks by the pacing weights
+// (never above its weekly capacity), places them on real air dates (at most perDay a day),
+// then rotates creatives by their shares. Roadblock puts rival same-hour spots on the same
+// dates (more different people); stagger puts them on different dates (more frequency).
 export function buildSchedule(A, P) {
-  const W = A.W, wts = pacingWeights(P.pacing, W), cap = Math.max(1, Math.round(P.capWk || 3));
-  const start = new Date((P.start || new Date().toISOString().slice(0, 10)) + 'T12:00:00');
-  const sDow = (start.getDay() + 6) % 7;
-  const occ = new Map(), rows = [], grid = [];
-  const weeks = Array.from({ length: W }, () => ({ spots: 0, bud: 0, views: 0, byCh: {} }));
+  const cal = A.cal || campaignDays(P), W = cal.W, wts = pacingWeights(P.pacing, W);
+  const perDay = Math.max(1, Math.round(P.perDay || 1)), mix = creativeMix(P);
+  const occ = new Map(), units = [], grid = [];
   A.kept.forEach((x, pi) => {
-    // Largest-remainder split by weight (ties rotate by program so even pacing stays even),
-    // then spill anything above the weekly cap.
-    const tw = wts.reduce((a, b) => a + b, 0) || 1;
-    const raw = wts.map(w => x.spots * w / tw), alloc = raw.map(Math.floor);
+    const capW = x.capW || Array(W).fill(Math.max(1, P.capWk || 3));
+    const ww = wts.map((w, i) => capW[i] > 0 ? w : 0), tw = ww.reduce((a, b) => a + b, 0) || 1;
+    const raw = ww.map(w => x.spots * w / tw), alloc = raw.map(Math.floor);
     let left = x.spots - alloc.reduce((a, b) => a + b, 0);
-    raw.map((v, i) => [v - Math.floor(v), i]).filter(([, i]) => wts[i] > 0).sort((a, b) => (b[0] - a[0]) || ((a[1] - pi % W + W) % W) - ((b[1] - pi % W + W) % W)).forEach(([, i]) => { if (left > 0) { alloc[i]++; left--; } });
-    let spill = 0; alloc.forEach((n, i) => { if (n > cap) { spill += n - cap; alloc[i] = cap; } });
-    for (let i = 0; spill > 0 && i < W; i++) if (wts[i] > 0) { const room = cap - alloc[i]; const t = Math.min(room, spill); alloc[i] += t; spill -= t; }
+    raw.map((v, i) => [v - Math.floor(v), i]).filter(([, i]) => ww[i] > 0).sort((a, b) => (b[0] - a[0]) || ((a[1] - pi % W + W) % W) - ((b[1] - pi % W + W) % W)).forEach(([, i]) => { if (left > 0) { alloc[i]++; left--; } });
+    let spill = 0; alloc.forEach((n, i) => { if (n > capW[i]) { spill += n - capW[i]; alloc[i] = capW[i]; } });
+    const order = ww.map((w, i) => [w, i]).sort((a, b) => b[0] - a[0] || a[1] - b[1]).map(v => v[1]);
+    for (const i of order) { if (spill <= 0) break; const t = Math.min(capW[i] - alloc[i], spill); if (t > 0) { alloc[i] += t; spill -= t; } }
     grid.push({ x, alloc });
-    const days = x.days.length ? x.days : DAYS;
     alloc.forEach((n, w) => {
-      if (!n) return;
+      const dates = cal.days.filter(d => d.w === w && (!x.days.length || x.days.includes(d.day)));
       const used = {};
       for (let i = 0; i < n; i++) {
-        const sc = d => { const s = occ.get(w + '|' + d + '|' + x.hour); const o = s ? [...s].filter(c => c !== x.ch).length : 0; return P.same === 'stagger' ? -o : o; };
-        const d = [...days].sort((a, b) => (used[a] || 0) - (used[b] || 0) || sc(b) - sc(a) || DAYS.indexOf(a) - DAYS.indexOf(b))[0];
-        used[d] = (used[d] || 0) + 1;
-        const k = w + '|' + d + '|' + x.hour; if (!occ.has(k)) occ.set(k, new Set()); occ.get(k).add(x.ch);
+        const sc = d => { const o = occ.get(d.iso + '|' + x.hour); const k = o ? [...o].filter(c => c !== x.ch).length : 0; return P.same === 'stagger' ? -k : k; };
+        const d = dates.filter(d => (used[d.iso] || 0) < perDay).sort((a, b) => (used[a.iso] || 0) - (used[b.iso] || 0) || sc(b) - sc(a) || (a.iso < b.iso ? -1 : 1))[0];
+        if (!d) break;
+        used[d.iso] = (used[d.iso] || 0) + 1;
+        const k = d.iso + '|' + x.hour; if (!occ.has(k)) occ.set(k, new Set()); occ.get(k).add(x.ch);
+        units.push({ x, d });
       }
-      Object.keys(used).sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).forEach(d => {
-        const dt = new Date(start.getTime() + (w * 7 + (DAYS.indexOf(d) - sDow + 7) % 7) * 864e5);
-        rows.push({ week: w + 1, date: dt.toISOString().slice(0, 10), day: d, ch: x.ch, p: x.p, hour: x.hour, tier: x.tier, spots: used[d], cost: used[d] * x.cost, views: used[d] * x.mean });
-      });
-      const wk = weeks[w]; wk.spots += n; wk.bud += n * x.cost; wk.views += n * x.mean; wk.byCh[x.ch] = (wk.byCh[x.ch] || 0) + n;
     });
   });
-  rows.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.hour - b.hour);
-  // Same-hour clashes between different channels on the same night.
-  const clashes = [...occ.entries()].filter(([, s]) => s.size > 1).length;
-  return { rows, grid, weeks, wts, clashes, start: start.toISOString().slice(0, 10) };
+  // Creative rotation: each spot gets the creative furthest below its share,
+  // balancing within the programme first and across the whole plan second.
+  units.sort((a, b) => a.d.iso < b.d.iso ? -1 : a.d.iso > b.d.iso ? 1 : a.x.hour - b.x.hour);
+  const gCnt = mix.map(() => 0), pCnt = new Map(); let gN = 0;
+  units.forEach(u => {
+    const pc = pCnt.get(u.x.key) || mix.map(() => 0), pn_ = pc.reduce((a, b) => a + b, 0);
+    let best = 0, bs = -Infinity;
+    mix.forEach((c, i) => { const sc = (c.w * (pn_ + 1) - pc[i]) + .5 * (c.w * (gN + 1) - gCnt[i]); if (sc > bs + 1e-9) { bs = sc; best = i; } });
+    pc[best]++; gCnt[best]++; gN++; pCnt.set(u.x.key, pc); u.cr = best;
+  });
+  // Aggregate to one row per date x programme x creative.
+  const map = new Map();
+  units.forEach(u => {
+    const c = mix[u.cr], k = u.d.iso + '|' + u.x.key + '|' + u.cr;
+    let r = map.get(k);
+    if (!r) { r = { week: u.d.w + 1, date: u.d.iso, day: u.d.day, ch: u.x.ch, p: u.x.p, key: u.x.key, hour: u.x.hour, tier: u.x.tier, cr: u.cr, dur: c.dur, spots: 0, cost: 0, rateCard: 0, views: 0 }; map.set(k, r); }
+    r.spots++; r.cost += u.x.net30 * c.dur / 30; r.rateCard += u.x.rate30 * c.dur / 30; r.views += u.x.mean;
+  });
+  const rows = [...map.values()].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.hour - b.hour);
+  const weeks = Array.from({ length: W }, () => ({ spots: 0, bud: 0, views: 0, byCh: {} }));
+  rows.forEach(r => { const wk = weeks[r.week - 1]; wk.spots += r.spots; wk.bud += r.cost; wk.views += r.views; wk.byCh[r.ch] = (wk.byCh[r.ch] || 0) + r.spots; });
+  const byCr = mix.map((c, i) => ({ ...c, spots: gCnt[i], cost: rows.filter(r => r.cr === i).reduce((a, r) => a + r.cost, 0) }));
+  const spent = rows.reduce((a, r) => a + r.cost, 0), rateCard = rows.reduce((a, r) => a + r.rateCard, 0);
+  const clashes = [...occ.values()].filter(s => s.size > 1).length;
+  return { rows, grid, weeks, wts, clashes, start: cal.start, end: cal.end, days: cal.days, mix, byCr, spent, rateCard, placed: units.length };
 }
 
 // Hours where two or more plan channels air programs head to head.
