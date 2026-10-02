@@ -1148,7 +1148,9 @@ function renderActive() {
   if (!S.F.length && S.TAB !== 'scen') { el.innerHTML = emptyHTML; return; }
   VIEWS[S.TAB](el);
 }
+const HIDDEN_TABS = ['drill', 'data']; // kept in code, hidden from the menu
 function setTab(t) {
+  if (HIDDEN_TABS.includes(t)) t = 'overview';
   S.TAB = t;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
   renderActive(); window.scrollTo({ top: 0 });
