@@ -169,6 +169,8 @@ export async function exportScheduleXlsx(M, o) {
   const totRef = chanRefs.map(c => `'${c.name}'!P${c.T + 3}`).join('+') || '0';
   const rows = [['Client :', meta.client || ''], ['Brand :', meta.brand || ''], ['Campaign :', meta.campaign || ''], ['Period :', period], ['Primary TG :', meta.tg || ''],
     ['Budget 100% :', { formula: netRef, result: M.tot.net }], ['Total with taxes :', { formula: totRef, result: M.tot.total }], ['Creatives :', M.mix.map(m => `${m.name} ${m.dur}s (${Math.round(m.w * 100)}%)`).join(', ')], ['Date :', new Date()]];
+  const goals = [o.gT ? `Target GRP ${Math.round(o.gT)} (scheduled ${M.tot.grp.toFixed(1)})` : '', o.minR ? `Minimum net reach ${o.minR}% (estimated ${M.tot.reach.at[0].toFixed(1)}%)` : ''].filter(Boolean).join(' · ');
+  if (goals) { cf('B14', 'Goals :', { bold: true }); cf('D14', goals); }
   rows.forEach(([l, v], i) => { cf('B' + (5 + i), l, { bold: true }); const x = cf('D' + (5 + i), v, { fmt: i === 5 || i === 6 ? '"LKR "#,##0' : i === 8 ? 'dd-mmm-yyyy' : undefined }); if (i === 5) cf('E' + (5 + i), '(without tax)', { size: 10, color: 'FF5F6B7A' }); });
   const h0 = 16;
   ['I', 'J', 'K'].forEach(k => cover.getColumn(k).width = 20);

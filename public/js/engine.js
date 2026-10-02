@@ -268,6 +268,25 @@ export function planCalc(rows, P) {
 // its budget, then any leftover across tiers. Caps: spots per program per week, programs per
 // channel per tier, daypart maximums, manual channel shares and the budget itself.
 export function scen(plan, f, P, getD, dIntra, trace) {
+  const mode = P.pmode || 'budget', G = Math.max(0, +P.grpT || 0) * f;
+  if (mode === 'budget' || !(G > 0) || P.frozen) return Object.assign(scenCore(plan, f, P, getD, dIntra, trace), { mode: 'budget' });
+  // GRP target and budget: buy until the GRP target is reached or the budget runs out.
+  if (mode === 'both') return Object.assign(scenCore(plan, f, P, getD, dIntra, trace, G), { mode, gT: G });
+  // GRP target only: start from an estimated budget (target x median cost per rating point), then
+  // re-run with the money actually needed so channel, tier and daypart shares fit the real spend.
+  const lenF = avgLen(P) / 30, cpp = plan.items.filter(x => x.mean > 0).map(x => x.net30 * lenF / x.mean).sort((a, b) => a - b);
+  let B = G * (cpp.length ? cpp[cpp.length >> 1] : 25000) * 1.15, best = null, last = null;
+  for (let i = 0; i < 7; i++) {
+    const A = scenCore(plan, 1, Object.assign({}, P, { budget: B }), getD, dIntra, null, G); last = A;
+    if (A.views >= G - 1e-6) { if (!best || A.spent <= best.spent) best = A; const nb = A.spent * 1.03; if (Math.abs(nb - B) / B < .04) break; B = nb; }
+    else if (best) break; else B *= 1.5;
+  }
+  const A = best || last;
+  A.chs.forEach(c => { c.gap = 0; c.gapWhy = ''; });
+  return Object.assign(A, { mode, gT: G, B: A.spent, unspent: 0, over: 0, eff: A.spent > 0 ? A.net / (A.spent / 1e6) : 0 });
+}
+// One spot-by-spot buy at a fixed budget; gT (optional) stops buying once the plan reaches that many GRP.
+function scenCore(plan, f, P, getD, dIntra, trace, gT) {
   const B = P.budget * f, cal = campaignDays(P), W = cal.W;
   const wts = pacingWeights(P.pacing, W), act = wts.filter(w => w > 0).length;
   const capWk = Math.max(1, Math.round(P.capWk || 3)), perDay = Math.max(1, Math.round(P.perDay || 1));
@@ -302,7 +321,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   autoCh.forEach(c => chAlloc[c.ch] = (1 - fixSum) * (scSum > 0 ? (c.score || 0) / scSum : 1 / autoCh.length));
   byCh.forEach((_, ch) => { if (chAlloc[ch] == null) chAlloc[ch] = 0; });
 
-  let curNet = 0, spent = 0;
+  let curNet = 0, spent = 0, gSum = 0;
   const tierSp = [0, 0, 0, 0], dpSp = {}, chSp = {}, chN = {};
   DPS.forEach(d => dpSp[d] = 0); byCh.forEach((_, c) => { chSp[c] = 0; });
   const E = 1e-6;
@@ -311,15 +330,15 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const added = new Set(P.add || []), nB = Math.max(1, Math.round(P.nProg || 2)), rank = x => x.mean * x.sf;
   byCh.forEach(list => [1, 2, 3].forEach(t => { if (tiers[t - 1] > 0) list.filter(x => x.tier === t).sort((a, b) => rank(b) - rank(a)).slice(0, nB).forEach(x => x.inB = true); }));
   items.forEach(x => { if (x.locked) x.inB = true; if (added.has(x.key)) { x.inB = true; x.added = true; } });
-  const ok = x => x.inB && spent + x.cost <= B + E && x.cnt < x.capTot &&
+  const ok = x => x.inB && spent + x.cost <= B + E && x.cnt < x.capTot && (gT == null || gSum < gT - E) &&
     dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && chSp[x.ch] + x.cost <= chAlloc[x.ch] * B + E;
   const gain = x => { const R = chR(x.ch, x, x.cnt + 1); return (alpha * (net(x.ch, R) - curNet) + (1 - alpha) * x.mean) * x.sf / x.cost; };
   let phase = '';
-  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
-  const fill = (pool, extra) => {
+  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; gSum += x.mean; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
+  const fill = (pool, extra, gf = gain) => {
     for (;;) {
       let best = null, bg = -Infinity;
-      for (const x of pool) { if (!ok(x) || (extra && !extra(x))) continue; const g = gain(x); if (g > bg) { bg = g; best = x; } }
+      for (const x of pool) { if (!ok(x) || (extra && !extra(x))) continue; const g = gf(x); if (g > bg) { bg = g; best = x; } }
       if (!best) break; take(best, bg);
     }
   };
@@ -330,6 +349,9 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < Math.min(act, x.capTot) && ok(x)) take(x, null); });
   // Every basket programme gets a first spot (best value first) so the whole basket is on air.
   phase = 'basket'; fill(items, x => x.cnt === 0);
+  // Reach first: while net reach is under the minimum, buy the spot with the most new reach per rupee.
+  const minR = Math.max(0, +P.target || 0);
+  if (minR > 0) { phase = 'reach'; fill(items, () => curNet < minR, x => (net(x.ch, chR(x.ch, x, x.cnt + 1)) - curNet) * x.sf / x.cost); }
   phase = 'minimums';
   Object.keys(chFix).forEach(ch => fill(byCh.get(ch) || [], x => chSp[ch] + x.cost <= chFix[ch] * B + E));
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
@@ -512,7 +534,7 @@ export function healthChecks(rows, plan, A, P, getD) {
   const anchors = it.filter(x => x.role === 'anchor');
   L.push({ t: anchors.length ? 'ok' : 'wa', m: anchors.length ? `${anchors.length} anchor program${anchors.length > 1 ? 's' : ''} carry the plan (Tier 1 and steady)` : 'No anchor programs: nothing in the basket is both Tier 1 and steady' });
   if (A.fixed) L.push({ t: A.over > 0 ? 'wa' : 'in', m: A.over > 0 ? `Schedule kept as planned after rate edits: it is <b>${lkr(A.over)} over budget</b>. Re-optimise to fit the budget with the new rates.` : `Schedule kept as planned after rate edits (${lkr(A.unspent)} under budget). Re-optimise to use the new rates.` });
-  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every basket programme there is at its spot cap or daypart limit.${short.filter(c => c.suggest && c.suggest[0] && c.suggest[0].fits).map(c => ` Suggested for ${chName(c.ch)}: <b>${pn(c.suggest[0].p)}</b> (Tier ${c.suggest[0].tier}, TVR ${nf(c.suggest[0].mean, 2)}, up to ${c.suggest[0].can} spot${c.suggest[0].can > 1 ? 's' : ''}).`).join('')} Add a programme to that channel's basket, pick more programmes per tier, raise the spots-per-week or spots-per-day cap, or lower that channel's share.` }); }
+  if (!A.fixed && A.unspent > A.B * .02 && !(A.gT > 0 && A.views >= A.gT - .5)) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every basket programme there is at its spot cap or daypart limit.${short.filter(c => c.suggest && c.suggest[0] && c.suggest[0].fits).map(c => ` Suggested for ${chName(c.ch)}: <b>${pn(c.suggest[0].p)}</b> (Tier ${c.suggest[0].tier}, TVR ${nf(c.suggest[0].mean, 2)}, up to ${c.suggest[0].can} spot${c.suggest[0].can > 1 ? 's' : ''}).`).join('')} Add a programme to that channel's basket, pick more programmes per tier, raise the spots-per-week or spots-per-day cap, or lower that channel's share.` }); }
   A.tiers.forEach(t => { if (t.target > 0 && Math.abs(t.actual - t.target) > 10) L.push({ t: 'in', m: `Tier ${t.t} gets ${nf(t.actual, 0)}% against a ${nf(t.target, 0)}% target${t.avail ? '' : ' (no Tier ' + t.t + ' programs in this brief)'}; leftover budget rolled to other tiers.` }); });
   A.dps.forEach(d => { if (d.present && d.min > 0 && d.actual + .5 < d.min) L.push({ t: 'wa', m: `${d.d} gets ${nf(d.actual, 0)}%, below its ${nf(d.min, 0)}% minimum. Not enough spots available there under the caps.` }); });
   if (A.relaxed) L.push({ t: 'in', m: 'Daypart maximums were scaled up because the brief only covers some dayparts.' });
@@ -526,8 +548,13 @@ export function healthChecks(rows, plan, A, P, getD) {
   if (A.loss > .35) L.push({ t: 'wa', m: `${nf(A.loss * 100, 0)}% of gross reach is lost to duplication. Channels in this plan share a lot of viewers.` });
   else L.push({ t: 'ok', m: `Duplication loss is ${nf(A.loss * 100, 0)}%, an acceptable overlap` });
   if (P.target > 0) {
-    if (A.net >= P.target) L.push({ t: 'ok', m: `Target reach of ${nf(P.target, 0)}% is met (${nf(A.net, 1)}%)` });
-    else L.push({ t: 'wa', m: `Net reach ${nf(A.net, 1)}% is below the ${nf(P.target, 0)}% target. Add budget or channels, or switch to the Reach strategy.` });
+    if (A.net >= P.target) L.push({ t: 'ok', m: `Minimum net reach of ${nf(P.target, 0)}% is met (${nf(A.net, 1)}%)` });
+    else L.push({ t: 'wa', m: `Net reach ${nf(A.net, 1)}% is below the ${nf(P.target, 0)}% minimum. Click <b>Optimise for me</b> to search for a set-up that reaches it, or add ${A.mode === 'budget' ? 'budget' : 'GRP'} or channels.` });
+  }
+  if (A.gT > 0) {
+    const g = A.views, cprp = g > 0 ? A.spent / g : 0;
+    if (g >= A.gT - .5) L.push({ t: 'ok', m: `GRP target of ${nf(A.gT, 0)} is met: ${nf(g, 1)} GRP for ${lkr(A.spent)} (cost per GRP ${lkr(cprp)}).` });
+    else L.push({ t: 'wa', m: `Only <b>${nf(g, 1)} of ${nf(A.gT, 0)} GRP</b> could be bought ${A.mode === 'both' && A.unspent < A.B * .02 ? 'before the budget ran out' : 'within the spot caps and basket'}. ${A.mode === 'both' ? 'Raise the budget, ' : ''}add programmes or raise the weekly spot cap.` });
   }
   const odd = rows.filter(r => r.sh > 100).length;
   if (odd) L.push({ t: 'wa', m: `${odd} row${odd > 1 ? 's show' : ' shows'} TVR share above 100%. Check the source file.` });

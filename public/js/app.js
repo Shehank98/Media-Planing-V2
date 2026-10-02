@@ -16,9 +16,9 @@ const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).
 const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); };
 const DEFAULT_P = {
   sr: 85,
-  budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [], add: [],
+  budget: 10000000, pmode: 'budget', grpT: 300, autoOpt: true, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 60, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [], add: [],
   strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
-  weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'bestday', dupThr: .5, pv: 2, repQ: 40,
+  weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'bestday', dupThr: .5, pv: 3, repQ: 40,
   creatives: [{ name: 'Creative A', dur: 30, share: 100 }], rates: {}, disc: {}, sscl: 2.5, vat: 18
 };
 const S = {
@@ -43,6 +43,7 @@ S.P.add = Array.isArray(S.P.add) ? [...S.P.add] : []; S.P.lock = [...(S.P.lock |
 ['rates', 'disc'].forEach(k => { if (!S.P[k] || typeof S.P[k] !== 'object') S.P[k] = {}; });
 // Older saved plans used roadblock by default: move them to best-day placement once.
 if (!S.P.pv) { if (S.P.same === 'roadblock') S.P.same = 'bestday'; S.P.pv = 2; }
+if (S.P.pv < 3) { if (!S.P.target) S.P.target = 60; S.P.autoOpt = true; S.P.pmode = S.P.pmode || 'budget'; S.P.pv = 3; }
 const mixText = P => { const m = creativeMix(P); return m.map(c => `${c.name} ${c.dur}s${m.length > 1 ? ' (' + nf(c.w * 100, 0) + '%)' : ''}`).join(', '); };
 S.getD = getD;
 const charts = {};
@@ -101,7 +102,7 @@ function applyFilters() {
   if (!S.ROWS.length) { chrome(); renderActive(); return; }
   S.F = filterRows(S.FS);
   S.DPAGE = 0;
-  recalc(); chrome(); renderActive(); renderAICtx();
+  recalc(); chrome(); renderActive(); renderAICtx(); maybeAutoOpt();
 }
 // Overlap factor between two programmes: the within-channel factor, or the channel pair's factor.
 const progDup = (a, b) => a.ch === b.ch ? S.DINTRA : getD(a.ch, b.ch);
@@ -368,13 +369,18 @@ function vPlan(el) {
         <div class="presets"><button class="btn sm" data-preset="prime">Prime 6–10 PM</button><button class="btn sm" data-preset="allday">All day</button><button class="btn sm" data-preset="wd">Weekdays</button><button class="btn sm" data-preset="we">Weekend</button></div>
       </div></div>
       <div class="panel settings"><div class="ph"><h3>Plan settings</h3><span class="push"><button class="link" id="p-reset">Reset</button></span></div><div class="pb">
-        <details open><summary>Budget and cost</summary>
-          <label class="fld"><span>Budget (LKR)</span>${num('budget', { min: 0, step: 500000 })}</label>
+        <details open><summary>Goal and budget</summary>
+          <div class="fld"><span>Plan to</span>${seg('pmode', { pmode: P.pmode || 'budget' }, [['budget', 'A budget'], ['grp', 'A GRP target'], ['both', 'GRP within budget']])}</div>
+          <div class="two">${(P.pmode || 'budget') !== 'grp' ? `<label class="fld"><span>Budget (LKR)</span>${num('budget', { min: 0, step: 500000 })}</label>` : ''}
+          ${(P.pmode || 'budget') !== 'budget' ? `<label class="fld"><span>Target GRP</span>${num('grpT', { min: 0, step: 10 })}</label>` : ''}</div>
+          <p class="hint">${{ budget: 'Spends the budget for the most reach.', grp: 'Buys the target GRP at the lowest cost with the most reach; the budget is whatever that costs.', both: 'Buys up to the target GRP, never above the budget.' }[P.pmode || 'budget']}</p>
+          <label class="fld"><span>Minimum net reach <b id="l-tgt">${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="90" step="1" value="${P.target}"></label>
+          <p class="hint" style="margin-top:-6px">Spots that add the most new people are bought first until the plan reaches this.</p>
+          <label class="chk"><input type="checkbox" id="p-auto" ${P.autoOpt ? 'checked' : ''}> <span><b>Auto-optimise every plan</b>: on Apply and when the data or brief changes, test strategy, channels, programmes per tier and weekly cap and use the best set-up (${GOALS[S.OPT.goal].l.toLowerCase()} goal, minimum reach first)</span></label>
           <div class="two"><label class="fld"><span>Cost per rating point (30 sec)</span>${num('cprp', { min: 1000, step: 1000 })}</label>
           <label class="fld"><span>Minimum 30-sec rate</span>${num('minRate', { min: 0, step: 1000 })}</label></div>
           <p class="hint">Estimated 30-sec rate = the higher of the two × TVR. Type real rate cards and channel discounts in the <button class="link" data-tab-go="schedule">Schedule</button> tab.</p>
           <label class="fld"><span>Budget change <b id="l-cut">${P.cut ? '−' + P.cut + '%' : 'none'}</b></span><input type="range" id="p-cut" min="0" max="50" step="5" value="${P.cut}"></label>
-          <label class="fld"><span>Target net reach <b id="l-tgt">${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="90" step="1" value="${P.target}"></label>
         </details>
         <details open><summary>Creatives</summary>
           <div class="crs">${P.creatives.map((c, i) => `<div class="cr-row"><input type="text" data-cr="${i}" data-f="name" value="${esc(c.name)}" placeholder="Brand / creative" aria-label="Creative name"><select data-cr="${i}" data-f="dur" aria-label="Duration">${[5, 10, 15, 20, 25, 30, 45, 60].map(d => `<option value="${d}" ${+c.dur === d ? 'selected' : ''}>${d}s</option>`).join('')}</select><input type="number" min="0" max="100" data-cr="${i}" data-f="share" value="${c.share}" aria-label="Budget share %" title="Share of the budget for this creative"><span class="muted">%</span>${P.creatives.length > 1 ? `<button class="ico x" data-cr-del="${i}" title="Remove creative" aria-label="Remove creative">${ICO_X}</button>` : '<span></span>'}</div>`).join('')}</div>
@@ -382,22 +388,23 @@ function vPlan(el) {
           <p class="hint">% = share of the <b>budget</b> for each creative. Cost of a spot = 30-sec rate × duration ÷ 30, so a longer creative gets fewer spots for the same money.</p>
         </details>
         <details open><summary>Strategy and tiers</summary>
-          <div class="fld">${seg('strategy', { strategy: strat }, Object.entries(STRATS).map(([k, v]) => [k, v.label]))}${strat ? '' : ' <span class="tag">Custom</span>'}</div>
+          ${P.autoOpt ? '<p class="hint autonote">Auto-optimise picks the strategy, number of channels, programmes per tier and weekly cap. Untick it under Goal and budget to set them yourself.</p>' : ''}
+          <fieldset class="autof" ${P.autoOpt ? 'disabled' : ''}><div class="fld">${seg('strategy', { strategy: strat }, Object.entries(STRATS).map(([k, v]) => [k, v.label]))}${strat ? '' : ' <span class="tag">Custom</span>'}</div>
           <div class="fld"><span>Tier budget split (%) <b id="l-tsum">${P.tiers.reduce((a, b) => a + (+b || 0), 0)}%</b></span>
-            <div class="three">${[0, 1, 2].map(i => `<label><span class="sub">Tier ${i + 1}</span><input type="number" min="0" max="100" data-pa="tiers" data-i="${i}" value="${P.tiers[i]}"></label>`).join('')}</div></div>
+            <div class="three">${[0, 1, 2].map(i => `<label><span class="sub">Tier ${i + 1}</span><input type="number" min="0" max="100" data-pa="tiers" data-i="${i}" value="${P.tiers[i]}"></label>`).join('')}</div></div></fieldset>
           <div class="two"><label class="fld"><span>Tier 1 from percentile</span>${num('tp1', { min: 50, max: 99 })}</label><label class="fld"><span>Tier 3 below percentile</span>${num('tp3', { min: 1, max: 50 })}</label></div>
           <label class="fld"><span>Ignore programs below TVR</span>${num('minTvrPlan', { min: 0, step: .1 })}</label>
           <p class="hint" id="l-thr"></p>
         </details>
         <details><summary>Channels and programs</summary>
           <div class="fld">${seg('chMode', P, [['auto', 'Auto (best N)'], ['manual', 'Pick channels']])}</div>
-          ${P.chMode === 'auto' ? `<label class="fld"><span>Channels in plan <b id="l-nch">${P.nCh}</b></span><input type="range" id="p-nch" min="1" max="${Math.max(1, chOn.length)}" value="${Math.min(P.nCh, Math.max(1, chOn.length))}"></label>`
+          <fieldset class="autof" ${P.autoOpt ? 'disabled' : ''}>${P.chMode === 'auto' ? `<label class="fld"><span>Channels in plan <b id="l-nch">${P.nCh}</b></span><input type="range" id="p-nch" min="1" max="${Math.max(1, chOn.length)}" value="${Math.min(P.nCh, Math.max(1, chOn.length))}"></label>`
       : `<div class="fld"><div class="chips">${chOn.map(c => `<button class="chip ${P.chPick.includes(c) ? 'on' : ''}" data-pick-ch="${esc(c)}">${esc(chName(c))}</button>`).join('')}</div></div>`}
-          <label class="fld"><span>Best programmes per channel per tier <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="5" value="${P.nProg}"></label>
+          <label class="fld"><span>Best programmes per channel per tier <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="5" value="${P.nProg}"></label></fieldset>
           <p class="hint">The basket takes the best ${P.nProg} of each tier on every channel (average TVR adjusted for steadiness). Add more programmes from the basket itself.</p>
         </details>
         <details><summary>Caps and dayparts</summary>
-          <label class="fld"><span>Max spots per program per week <b id="l-cap">${P.capWk}</b></span><input type="range" id="p-cap" min="1" max="10" value="${P.capWk}"></label>
+          <fieldset class="autof" ${P.autoOpt ? 'disabled' : ''}><label class="fld"><span>Max spots per program per week <b id="l-cap">${P.capWk}</b></span><input type="range" id="p-cap" min="1" max="10" value="${P.capWk}"></label></fieldset>
           <table class="dpt"><thead><tr><th>Daypart</th><th>Min %</th><th>Max %</th></tr></thead><tbody>${DPS.map((d, i) => `<tr><td>${esc(d)}</td><td><input type="number" min="0" max="100" data-pa="dpMin" data-i="${i}" value="${P.dpMin[i]}"></td><td><input type="number" min="0" max="100" data-pa="dpMax" data-i="${i}" value="${P.dpMax[i]}"></td></tr>`).join('')}</tbody></table>
           <p class="hint">Share of spend by the program's usual start hour. Limits for dayparts outside the brief are ignored.</p>
         </details>
@@ -442,13 +449,13 @@ function updatePlan() {
   }
   const warn = S.health.filter(h => h.t === 'wa').length;
   const m = (l, v, cls = '', t = '') => `<div class="m ${cls}" title="${t}"><small>${l}</small><b>${v}</b></div>`;
-  $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', 'hl', 'Reached at least once') + m('Reach 3+', nf(A.r3, 1) + '%', '', 'Reached at least 3 times') + m('Budget used', lkr(A.spent)) +
+  $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', P.target && A.net < P.target ? 'bad' : 'hl', 'Reached at least once' + (P.target ? `; minimum ${P.target}%` : '')) + m('Reach 3+', nf(A.r3, 1) + '%', '', 'Reached at least 3 times') + m('GRP', nf(A.views, 0) + (A.gT ? ' / ' + nf(A.gT, 0) : ''), A.gT && A.views < A.gT - .5 ? 'bad' : '', 'Gross rating points: TVR × spots' + (A.gT ? ', against your target' : '')) + m(A.mode === 'grp' ? 'Budget needed' : 'Budget used', lkr(A.spent)) +
     m('Channels', A.chs.length) + m('Programs', A.kept.length) + m('Spots', ni(A.spots)) + m('Avg frequency', nf(A.freq, 1) + 'x') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK');
   const full = P.cut > 0 ? ` <span class="muted" style="font-size:12px">(full budget ${nf(base.net, 1)}%)</span>` : '';
   $('#pl-net').innerHTML = `<div class="bigline"><b>${nf(A.net, 1)}%</b><span class="muted">reached at least once${full}</span></div>
     <div class="flow"><div><b>${nf(A.gross, 1)}%</b><small>Gross reach</small></div><i>−</i><div><b>${nf(A.gross - A.net, 1)} pts</b><small>Same viewers</small></div><i>=</i><div><b style="color:var(--accent)">${nf(A.net, 1)}%</b><small>Net reach</small></div></div>
     <div class="flow" style="grid-template-columns:1fr 1fr 1fr"><div><b>${nf(A.r3, 1)}%</b><small>Reach 3+</small></div><div><b>${nf(A.freq, 1)}x</b><small>Avg frequency</small></div><div><b>${nf(A.eff, 2)}</b><small>Net pts per LKR 1M</small></div></div>
-    <p class="hint">Reach 3+ = reached at least three times, the usual effective-frequency goal. Duplication and repeat-spot reach are planning assumptions (Duplication tab).${P.target ? ` Target ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
+    <p class="hint">Reach 3+ = reached at least three times, the usual effective-frequency goal. Duplication and repeat-spot reach are planning assumptions (Duplication tab).${P.target ? ` Minimum ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
   const order = { wa: 0, in: 1, ok: 2 };
   $('#pl-health').innerHTML = [...S.health].sort((a, b) => (order[a.t] ?? 1) - (order[b.t] ?? 1)).map(h => `<li><span class="ic ${h.t}">${ICON[h.t]}</span><span>${h.m}</span></li>`).join('');
   $('#hl-sum').innerHTML = warn ? `<b style="color:var(--heat)">${warn} to check</b> · ${S.health.length} notes` : `all clear · ${S.health.length} notes`;
@@ -532,27 +539,43 @@ const GOALS = {
 const optLabel = x => `${STRATS[x.strategy].label} · ${x.nCh ? x.nCh + ' channels' : 'your channels'} · best ${x.nProg} per tier · max ${x.capWk}/week`;
 function optHTML() {
   const O = S.OPT, g = GOALS[O.goal], cur = S.cur;
-  const row = (r, i) => `<tr class="${i === 0 ? 'best' : ''}"><td class="l">${i === 0 ? '<span class="tag anchor">Best</span> ' : ''}${esc(optLabel(r.patch))}</td><td><b>${nf(r.net, 1)}%</b></td><td>${nf(r.r3, 1)}%</td><td>${nf(r.freq, 1)}x</td><td>${ni(r.spots)}</td><td>${lkr(r.spent).replace('LKR ', '')}</td><td>${cur ? `<span style="color:${r.net - cur.net >= 0 ? 'var(--good)' : 'var(--bad)'}">${r.net - cur.net >= 0 ? '+' : ''}${nf(r.net - cur.net, 1)}</span>` : ''}</td>
+  const row = (r, i) => `<tr class="${i === 0 ? 'best' : ''}"><td class="l">${i === 0 ? '<span class="tag anchor">Best</span> ' : ''}${esc(optLabel(r.patch))}</td><td><b>${nf(r.net, 1)}%</b>${S.P.target ? `<span class="sub" style="color:${r.net >= S.P.target ? 'var(--good)' : 'var(--bad)'}">${r.net >= S.P.target ? 'meets' : 'below'} ${S.P.target}%</span>` : ''}</td><td>${nf(r.r3, 1)}%</td><td>${nf(r.freq, 1)}x</td><td>${nf(r.grp || 0, 0)}</td><td>${ni(r.spots)}</td><td>${lkr(r.spent).replace('LKR ', '')}</td><td>${cur ? `<span style="color:${r.net - cur.net >= 0 ? 'var(--good)' : 'var(--bad)'}">${r.net - cur.net >= 0 ? '+' : ''}${nf(r.net - cur.net, 1)}</span>` : ''}</td>
     <td class="r"><button class="btn sm pri" data-opt-apply="${i}">Apply</button> <button class="btn sm" data-opt-save="${i}">Save as scenario</button></td></tr>`;
   return `<div class="panel optp"><div class="ph"><h3>Optimise for me</h3><span class="s">tests many plan set-ups on your budget, brief, period, creatives, rates and basket choices</span><span class="push"><button class="link" id="opt-close">Close</button></span></div><div class="pb">
     <div class="inl" style="gap:10px;flex-wrap:wrap"><span class="muted">Goal</span>${seg('goal', O, Object.entries(GOALS).map(([k, v]) => [k, v.l]))}<span class="muted">${esc(g.d)}</span>
       <button class="btn pri" id="opt-run" ${O.running ? 'disabled' : ''}>${O.running ? `Testing ${O.done} of ${O.total}…` : O.res ? 'Run again' : 'Find the best plan'}</button></div>
     ${O.running ? `<div class="optbar"><i style="width:${(O.done / Math.max(1, O.total) * 100).toFixed(0)}%"></i></div>` : ''}
-    ${O.res ? `<div class="tw" style="margin-top:12px"><table><thead><tr><th class="l">Plan set-up (top 5 of ${O.res.n} tested, ${O.res.all.length} different plans)</th><th>Net reach 1+</th><th>Reach 3+</th><th>Avg freq</th><th>Spots</th><th>Budget used</th><th>Reach vs now</th><th></th></tr></thead><tbody>
+    ${O.res ? `<div class="tw" style="margin-top:12px"><table><thead><tr><th class="l">Plan set-up (top 5 of ${O.res.n} tested, ${O.res.all.length} different plans)</th><th>Net reach 1+</th><th>Reach 3+</th><th>Avg freq</th><th>GRP</th><th>Spots</th><th>Budget used</th><th>Reach vs now</th><th></th></tr></thead><tbody>
       ${O.res.top.map(row).join('')}
-      ${cur ? `<tr class="tot"><td class="l">Your current plan</td><td>${nf(cur.net, 1)}%</td><td>${nf(cur.r3, 1)}%</td><td>${nf(cur.freq, 1)}x</td><td>${ni(cur.spots)}</td><td>${lkr(cur.spent).replace('LKR ', '')}</td><td>—</td><td></td></tr>` : ''}</tbody></table></div>
-      <p class="hint">Each set-up is a full plan: channel budgets by score, the best programmes per tier, spot-by-spot buying with duplication, caps and daypart limits. Apply one to use it, or save several as scenarios and open each one's schedule from the Schedule tab.</p>` : '<p class="hint" style="margin-top:8px">Varies: strategy (Reach / Balanced / Frequency), number of channels (2 up to 8, unless you picked channels yourself), best programmes per tier (1–3) and max spots per programme per week (2–4). Everything else stays as you set it.</p>'}
+      ${cur ? `<tr class="tot"><td class="l">Your current plan</td><td>${nf(cur.net, 1)}%</td><td>${nf(cur.r3, 1)}%</td><td>${nf(cur.freq, 1)}x</td><td>${nf(cur.views, 0)}</td><td>${ni(cur.spots)}</td><td>${lkr(cur.spent).replace('LKR ', '')}</td><td>—</td><td></td></tr>` : ''}</tbody></table></div>
+      <p class="hint">Set-ups that meet your minimum net reach${(S.P.pmode || 'budget') !== 'budget' ? ' and GRP target' : ''} are ranked first. Each set-up is a full plan: channel budgets by score, the best programmes per tier, spot-by-spot buying with duplication, caps and daypart limits. Apply one to use it, or save several as scenarios and open each one's schedule from the Schedule tab.</p>` : '<p class="hint" style="margin-top:8px">Varies: strategy (Reach / Balanced / Frequency), number of channels (2 up to 8, unless you picked channels yourself), best programmes per tier (1–3) and max spots per programme per week (2–4). Everything else stays as you set it.</p>'}
   </div></div>`;
 }
 // Best first; ties go to the cheaper, then simpler plan. Set-ups that give the same plan are shown once.
 function optRank(list) {
   const simp = r => (r.patch.nCh || 0) * 10 + r.patch.nProg + r.patch.capWk / 10, seen = new Set();
-  return list.sort((a, b) => b.score - a.score || a.spent - b.spent || simp(a) - simp(b))
+  const minR = +S.P.target || 0, gT = (S.P.pmode || 'budget') !== 'budget' ? +S.P.grpT || 0 : 0;
+  list.forEach(r => r.meet = (r.net >= minR - 1e-9 ? 2 : 0) + (!gT || r.grp >= gT - .5 ? 1 : 0));
+  return list.sort((a, b) => b.meet - a.meet || b.score - a.score || a.spent - b.spent || simp(a) - simp(b))
     .filter(r => { const k = r.net.toFixed(2) + '|' + r.spots + '|' + Math.round(r.spent); if (seen.has(k)) return false; seen.add(k); return true; });
 }
+// Auto-optimise runs again when the data, the brief or the goal changed since the last run
+// (fingerprint saved with the plan), the next time the Planner or Schedule tab is open.
+// Rates, discounts and basket edits do not re-trigger it (rate edits keep the schedule fixed on purpose).
+const SETUP_KEYS = ['strategy', 'tiers', 'nCh', 'nProg', 'capWk', 'frozen', 'optSig', 'split', 'rates', 'disc', 'add', 'lock', 'excl', 'sscl', 'vat', 'sr', 'spotLen', 'pv'];
+function optSig() {
+  const f = S.FS || {}, P = {}; Object.keys(S.P).filter(k => !SETUP_KEYS.includes(k)).sort().forEach(k => P[k] = S.P[k]);
+  return JSON.stringify([S.ROWS.length, S.meta && S.meta.name, f.from, f.to, f.ch && [...f.ch].sort(), f.cat && [...f.cat].sort(), f.day && [...f.day], f.h0, f.h1, f.minTvr, f.q, f.p, P, S.OPT.goal]);
+}
+function maybeAutoOpt() {
+  if (!S.P.autoOpt || S.OPT.running || !S.F.length || !['plan', 'schedule'].includes(S.TAB)) return;
+  if (S.P.optSig === optSig()) return;
+  runOpt(true);
+}
 function renderOpt() { const el = $('#pl-optp'); if (el) el.innerHTML = S.OPT.open ? optHTML() : ''; }
-async function runOpt() {
+async function runOpt(auto = false) {
   const O = S.OPT, P = S.P; if (O.running || !S.F.length) return;
+  O.open = true;
   const nMax = Math.min(8, channelStats(S.F).length), chs = P.chMode === 'manual' ? [0] : Array.from({ length: Math.max(1, nMax - 1) }, (_, i) => i + 2).filter(n => n <= nMax); if (!chs.length) chs.push(0);
   const combos = [];
   Object.keys(STRATS).forEach(st => chs.forEach(n => [1, 2, 3].forEach(np => [2, 3, 4].forEach(cap => combos.push({ strategy: st, tiers: [...STRATS[st].t], nProg: np, capWk: cap, ...(n ? { chMode: 'auto', nCh: n, split: {} } : {}) })))));
@@ -560,14 +583,19 @@ async function runOpt() {
   const out = [];
   for (let i = 0; i < combos.length; i++) {
     const A = simulate(combos[i]); O.done = i + 1;
-    if (A && A.kept.length) out.push({ patch: combos[i], net: A.net, r3: A.r3, freq: A.freq, spots: A.spots, spent: A.spent, A });
+    if (A && A.kept.length) out.push({ patch: combos[i], net: A.net, r3: A.r3, freq: A.freq, spots: A.spots, spent: A.spent, grp: A.views, A });
     if (i % 4 === 3) { renderOpt(); await new Promise(r => setTimeout(r, 0)); }
   }
   const f = GOALS[O.goal].f;
   out.forEach(r => r.score = f(r.A));
   const all = optRank(out.map(({ A, ...r }) => r));
   O.res = { n: out.length, top: all.slice(0, 5), all };
-  O.running = false; renderOpt(); toast('Tested ' + out.length + ' plans');
+  O.running = false;
+  if (auto && all.length) {
+    const b = all[0]; Object.assign(S.P, JSON.parse(JSON.stringify(b.patch))); S.P.frozen = null; S.P.optSig = optSig(); savePlan(); recalc();
+    if (S.TAB === 'plan') vPlan($('#v-plan')); else refreshPlanViews();
+    toast(`Optimised (${out.length} set-ups tested): ${optLabel(b.patch)}`);
+  } else { renderOpt(); toast('Tested ' + out.length + ' plans'); }
 }
 // Program basket: compact, grouped by channel (or a flat list by spend), with tier filters.
 const ICO_LOCK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
@@ -770,7 +798,7 @@ function vSchedule(el) {
   ${S.scenarios.length ? pick : ''}
   ${RO ? `<div class="frozen"><div><b>Viewing scenario "${esc(ctx.sc.name)}"</b>: its own settings, basket and filters, rebuilt on the loaded data. Read-only here; load it into the Planner to change rates or settings.</div><button class="btn" data-sch-sc="">Back to current plan</button><button class="btn pri" data-sc-load="${ctx.sc.id}">Load into Planner</button></div>` : ''}
   ${!RO && A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
-  <div class="planbar">${sm('Campaign period', fmtDate(ctx.Sc.start) + ' – ' + fmtDate(ctx.Sc.end), 'hl')}${sm('Net reach 1+', nf(M.tot.reach.at[0], 1) + '%', 'hl')}${sm('Reach 3+', nf(M.tot.reach.at[2], 1) + '%')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
+  <div class="planbar">${sm('Campaign period', fmtDate(ctx.Sc.start) + ' – ' + fmtDate(ctx.Sc.end), 'hl')}${sm('Net reach 1+', nf(M.tot.reach.at[0], 1) + '%', 'hl')}${sm('Reach 3+', nf(M.tot.reach.at[2], 1) + '%')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1) + (A.gT ? ' / ' + nf(A.gT, 0) + ' target' : ''))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
   <div class="grid g2">
     ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
       <label class="fld"><span>Client</span><input type="text" data-meta="client" value="${esc(meta.client || '')}"></label>
@@ -801,7 +829,7 @@ async function runXlsx(btn) {
   const ctx = schedCtx();
   if (!ctx) { toast('Build a plan first'); return; }
   btn.disabled = true; const t = btn.textContent; btn.textContent = 'Building…';
-  try { const name = await exportScheduleXlsx(scheduleModel(ctx), { meta: Object.assign({}, lsGet('deckMeta', {}), ctx.sc ? { scenario: ctx.sc.name } : {}), P: ctx.P, start: ctx.Sc.start, end: ctx.Sc.end, net: ctx.A.net, r3: ctx.A.r3 }); toast('Downloaded ' + name); }
+  try { const name = await exportScheduleXlsx(scheduleModel(ctx), { meta: Object.assign({}, lsGet('deckMeta', {}), ctx.sc ? { scenario: ctx.sc.name } : {}), P: ctx.P, start: ctx.Sc.start, end: ctx.Sc.end, net: ctx.A.net, r3: ctx.A.r3, gT: ctx.A.gT || 0, minR: +ctx.P.target || 0 }); toast('Downloaded ' + name); }
   catch (e) { toast('Excel export failed: ' + e.message); }
   finally { btn.disabled = false; btn.textContent = t; }
 }
@@ -1145,7 +1173,7 @@ function setTab(t) {
   if (HIDDEN_TABS.includes(t)) t = 'overview';
   S.TAB = t;
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
-  renderActive(); window.scrollTo({ top: 0 });
+  renderActive(); window.scrollTo({ top: 0 }); maybeAutoOpt();
 }
 
 /* ---------- drawers ---------- */
@@ -1340,7 +1368,8 @@ function applyDraft() {
   if (!S.PD) return;
   S.P = S.PD; S.PD = null; S.P.frozen = null; S.P.spotLen = Math.round(avgLen(S.P));
   if (S.P.end && S.P.end < S.P.start) S.P.end = S.P.start;
-  savePlan(); recalc(); vPlan($('#v-plan')); toast('Plan settings applied');
+  savePlan(); recalc(); vPlan($('#v-plan'));
+  if (S.P.autoOpt) { S.P.optSig = null; runOpt(true); } else toast('Plan settings applied');
 }
 const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], [data-bk-addk], [data-bk-rm], #v-plan [data-split], #pl-split-reset, [data-act]';
 function unfreezeIf(t) { if (S.P.frozen && t && t.closest && t.closest(PLAN_EDIT)) { S.P.frozen = null; savePlan(); document.querySelectorAll('#v-plan .frozen').forEach(e => e.remove()); } }
@@ -1426,6 +1455,7 @@ document.addEventListener('click', e => {
   if (t.closest('#dr-exp')) { const D = DIMS[S.DR.levels[0]]; new Set(S.F.map(D.key)).forEach(k => S.DR.open.add('¦' + k)); vDrill($('#v-drill')); return; }
   if ((el = t.closest('[data-seg] button'))) {
     const k = el.parentElement.dataset.seg;
+    if (k === 'pmode') { draft().pmode = el.dataset.v; vPlan($('#v-plan')); return; }
     if (['strategy', 'pacing', 'same'].includes(k)) {
       const D = draft(); D[k] = el.dataset.v; if (k === 'strategy') D.tiers = [...STRATS[el.dataset.v].t];
       vPlan($('#v-plan')); return;
@@ -1495,6 +1525,7 @@ document.addEventListener('change', e => {
   }
   if (t.dataset.bkAdd !== undefined && t.value) { const k = t.value; S.P.add = [...new Set([...(S.P.add || []), k])]; S.P.excl = S.P.excl.filter(x => x !== k); S.P.frozen = null; savePlan(); recalc(); updatePlan(); toast('Added to the basket'); return; }
   if (t.dataset.split !== undefined) { S.P.split[t.dataset.split] = Math.max(0, Math.min(100, +t.value || 0)); savePlan(); recalc(); updatePlan(); return; }
+  if (t.id === 'p-auto') { draft().autoOpt = t.checked; vPlan($('#v-plan')); return; }
   if (t.dataset.p !== undefined && t.type !== 'number' && inSettings(t)) {
     const D = draft(); D[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value;
     if (D.end && D.end < D.start) D.end = D.start;

@@ -488,3 +488,6 @@ table.taxt{margin-left:auto}
 .optp tr.best td{background:color-mix(in srgb,var(--accent) 8%,var(--panel))}
 .optbar{height:6px;border-radius:3px;background:var(--line);margin-top:10px;overflow:hidden}
 .optbar i{display:block;height:100%;background:var(--accent);transition:width .2s}
+fieldset.autof{border:0;margin:0;padding:0;min-width:0}
+fieldset.autof:disabled{opacity:.55}
+.planbar .m.bad b{color:var(--bad)}
