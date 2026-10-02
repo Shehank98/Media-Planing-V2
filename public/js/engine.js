@@ -353,6 +353,12 @@ export function scen(plan, f, P, getD, dIntra, trace) {
     // Why money is left: smaller than one more spot, or every programme is full.
     c.gapWhy = c.gap < 1 ? '' : !fits.length ? 'cap' : cheapest > c.gap + E ? 'spot' : spent + cheapest > B + E ? 'budget' : 'daypart';
     c.cheapest = cheapest;
+    // Next best programmes to add: outside the basket, by the same ranking (TVR x steadiness);
+    // when money is left, only ones whose spot fits in it, with how many spots it could take.
+    const rest = (byCh.get(c.ch) || []).filter(x => !x.inB).sort((a, b) => rank(b) - rank(a));
+    const fit = c.gap >= 1 ? rest.filter(x => x.cost <= c.gap + E && x.capTot > 0) : [];
+    c.suggest = (fit.length ? fit : rest).slice(0, 3).map(x => ({ key: x.key, ch: x.ch, p: x.p, tier: x.tier, mean: x.mean, hour: x.hour, cost: x.cost, fits: fit.includes(x),
+      can: fit.includes(x) ? Math.min(x.capTot, Math.floor((c.gap + E) / x.cost)) : 0 }));
   });
   const chs = [...m.values()].sort((a, b) => b.alloc - a.alloc || b.w - a.w);
   const gross = chs.reduce((a, c) => a + c.R, 0), views = kept.reduce((a, x) => a + x.views, 0);
@@ -491,7 +497,7 @@ export function healthChecks(rows, plan, A, P, getD) {
   const anchors = it.filter(x => x.role === 'anchor');
   L.push({ t: anchors.length ? 'ok' : 'wa', m: anchors.length ? `${anchors.length} anchor program${anchors.length > 1 ? 's' : ''} carry the plan (Tier 1 and steady)` : 'No anchor programs: nothing in the basket is both Tier 1 and steady' });
   if (A.fixed) L.push({ t: A.over > 0 ? 'wa' : 'in', m: A.over > 0 ? `Schedule kept as planned after rate edits: it is <b>${lkr(A.over)} over budget</b>. Re-optimise to fit the budget with the new rates.` : `Schedule kept as planned after rate edits (${lkr(A.unspent)} under budget). Re-optimise to use the new rates.` });
-  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every basket programme there is at its spot cap or daypart limit. Add a programme to that channel's basket, pick more programmes per tier, raise the spots-per-week or spots-per-day cap, or lower that channel's share.` }); }
+  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every basket programme there is at its spot cap or daypart limit.${short.filter(c => c.suggest && c.suggest[0] && c.suggest[0].fits).map(c => ` Suggested for ${chName(c.ch)}: <b>${pn(c.suggest[0].p)}</b> (Tier ${c.suggest[0].tier}, TVR ${nf(c.suggest[0].mean, 2)}, up to ${c.suggest[0].can} spot${c.suggest[0].can > 1 ? 's' : ''}).`).join('')} Add a programme to that channel's basket, pick more programmes per tier, raise the spots-per-week or spots-per-day cap, or lower that channel's share.` }); }
   A.tiers.forEach(t => { if (t.target > 0 && Math.abs(t.actual - t.target) > 10) L.push({ t: 'in', m: `Tier ${t.t} gets ${nf(t.actual, 0)}% against a ${nf(t.target, 0)}% target${t.avail ? '' : ' (no Tier ' + t.t + ' programs in this brief)'}; leftover budget rolled to other tiers.` }); });
   A.dps.forEach(d => { if (d.present && d.min > 0 && d.actual + .5 < d.min) L.push({ t: 'wa', m: `${d.d} gets ${nf(d.actual, 0)}%, below its ${nf(d.min, 0)}% minimum. Not enough spots available there under the caps.` }); });
   if (A.relaxed) L.push({ t: 'in', m: 'Daypart maximums were scaled up because the brief only covers some dayparts.' });

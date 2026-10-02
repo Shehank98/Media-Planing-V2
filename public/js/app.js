@@ -471,7 +471,7 @@ function updatePlan() {
     const rev = c.progs.some(x => x.role === 'review') && c.progs.length === 1;
     const why = sel && sel.manual ? 'Fixed share (yours)' : `Channel score ${nf((sel?.score || 0) * 100, 1)}: 0.6 reach share + 0.4 TVR share`;
     const left = A.fixed ? '' : c.gapWhy === 'cap' ? 'basket is full: add a programme' : c.gapWhy === 'daypart' ? 'daypart limit reached' : c.gapWhy === 'budget' ? 'total budget used' : c.gapWhy === 'spot' ? 'less than one spot' : '';
-    return `<tr class="${rev || c.gapWhy === 'cap' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.allocW * 100).toFixed(0)}">` : `<b>${nf(c.allocW * 100, 1)}%</b>`}</td><td>${lkr(c.alloc).replace('LKR ', '')}</td><td><b>${lkr(c.bud).replace('LKR ', '')}</b></td><td>${lkr(c.gap).replace('LKR ', '')}${left ? `<span class="sub">${left}</span>` : ''}</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
+    return `<tr class="${rev || c.gapWhy === 'cap' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.allocW * 100).toFixed(0)}">` : `<b>${nf(c.allocW * 100, 1)}%</b>`}</td><td>${lkr(c.alloc).replace('LKR ', '')}</td><td><b>${lkr(c.bud).replace('LKR ', '')}</b></td><td>${lkr(c.gap).replace('LKR ', '')}${left ? `<span class="sub">${left}</span>` : ''}${c.gapWhy === 'cap' && c.suggest && c.suggest[0] && c.suggest[0].fits ? `<button class="link sub" data-bk-addk="${esc(c.suggest[0].key)}" title="Add the next best programme to this channel's basket">+ ${esc(pn(c.suggest[0].p))}</button>` : ''}</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
   }).join('')}</tbody></table></div><p class="hint">Each channel gets its share of the budget, and spots are added until the next spot would no longer fit. Programmes already in the basket get more spots first; if money is still left, the channel's next best programmes are added (marked Top-up in the basket).${S.editSplit ? ' Type a share to fix a channel; the other channels share the rest by score. <button class="link" id="pl-split-reset">Clear fixed shares</button>' : ''}</p>`;
   // Basket
   renderBasket();
@@ -562,11 +562,15 @@ function renderBasket() {
     body = A.chs.map(c => {
       const its = items.filter(x => x.ch === c.ch).sort((a, b) => a.tier - b.tier || b.bud - a.bud); if (!its.length) return '';
       const open = B.open.has(c.ch), lim = open ? its.length : Math.min(2, its.length);
-      const inB = new Set(A.basketKeys || []), avail = S.plan.items.filter(x => x.ch === c.ch && !inB.has(x.key)).sort((a, b) => b.mean - a.mean);
-      const picker = avail.length ? `<select class="bk-add" data-bk-add="${esc(c.ch)}" aria-label="Add a programme to ${esc(chName(c.ch))}"><option value="">+ Add programme to ${esc(chName(c.ch))}…</option>${avail.map(x => `<option value="${esc(x.key)}">Tier ${x.tier} · ${esc(pn(x.p))} · TVR ${nf(x.mean, 2)} · ${hl(x.hour)}</option>`).join('')}</select>` : '';
+      const inB = new Set(A.basketKeys || []), sug = c.suggest || [], sk = new Set(sug.map(x => x.key));
+      const avail = S.plan.items.filter(x => x.ch === c.ch && !inB.has(x.key) && !sk.has(x.key)).sort((a, b) => b.mean - a.mean);
+      const opt = (x, tag) => `<option value="${esc(x.key)}">${tag}Tier ${x.tier} · ${esc(pn(x.p))} · TVR ${nf(x.mean, 2)} · ${hl(x.hour)}</option>`;
+      const picker = sug.length || avail.length ? `<select class="bk-add" data-bk-add="${esc(c.ch)}" aria-label="Add a programme to ${esc(chName(c.ch))}"><option value="">+ Add programme to ${esc(chName(c.ch))}…</option>${sug.length ? `<optgroup label="Suggested next best">${sug.map(x => opt(x, '')).join('')}</optgroup>` : ''}${avail.length ? `<optgroup label="All other programmes">${avail.map(x => opt(x, '')).join('')}</optgroup>` : ''}</select>` : '';
+      const s0 = sug[0];
+      const next = s0 ? `<div class="bk-sug"><span class="muted">Next best:</span> <b>${esc(pn(s0.p))}</b> ${tierTag(s0.tier)} <span class="muted">TVR ${nf(s0.mean, 2)} · ${hl(s0.hour)} · LKR ${ni(Math.round(s0.cost))} a spot${s0.fits ? ` · could take <b>${s0.can}</b> spot${s0.can > 1 ? 's' : ''} with the ${lkr(c.gap).replace('LKR ', 'LKR ')} left` : c.gap >= 1 ? ' · costs more than the money left' : ''}</span><button class="btn sm" data-bk-addk="${esc(s0.key)}">Add</button></div>` : '';
       return `<div class="bk-grp"><div class="bk-gh">${dot(c.ch)}<b>${esc(chName(c.ch))}</b><span class="muted">${nf(c.w * 100, 0)}% of spend · ${lkr(c.bud).replace('LKR ', '')} · ${c.spots} spots · ${its.length} programme${its.length > 1 ? 's' : ''}</span></div>
         ${its.slice(0, lim).map(row).join('')}
-        <div class="bk-foot">${its.length > 2 ? `<button class="bk-more" data-bkopen="${esc(c.ch)}">${open ? 'Show less' : `+ ${its.length - lim} more on ${esc(chName(c.ch))}`}</button>` : '<span></span>'}${picker}</div></div>`;
+        ${next}<div class="bk-foot">${its.length > 2 ? `<button class="bk-more" data-bkopen="${esc(c.ch)}">${open ? 'Show less' : `+ ${its.length - lim} more on ${esc(chName(c.ch))}`}</button>` : '<span></span>'}${picker}</div></div>`;
     }).join('');
   }
   if ($('#bk-sum')) $('#bk-sum').textContent = `best ${A.nB} per tier on each channel · ${all.length} programmes · ${ni(A.spots)} spots`;
@@ -1257,7 +1261,7 @@ function applyDraft() {
   if (S.P.end && S.P.end < S.P.start) S.P.end = S.P.start;
   savePlan(); recalc(); vPlan($('#v-plan')); toast('Plan settings applied');
 }
-const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], #v-plan [data-split], #pl-split-reset, [data-act]';
+const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], [data-bk-addk], [data-bk-rm], #v-plan [data-split], #pl-split-reset, [data-act]';
 function unfreezeIf(t) { if (S.P.frozen && t && t.closest && t.closest(PLAN_EDIT)) { S.P.frozen = null; savePlan(); document.querySelectorAll('#v-plan .frozen').forEach(e => e.remove()); } }
 ['click', 'change', 'input'].forEach(ev => document.addEventListener(ev, e => unfreezeIf(e.target), true));
 
@@ -1322,6 +1326,7 @@ document.addEventListener('click', e => {
     savePlan(); recalc(); if (S.TAB === 'plan') updatePlan(); if ($('#detail').classList.contains('on')) renderDetail();
     toast(X.includes(k) ? 'Removed from plan' : 'Restored to plan'); return;
   }
+  if ((el = t.closest('[data-bk-addk]'))) { const k = el.dataset.bkAddk; S.P.add = [...new Set([...(S.P.add || []), k])]; S.P.excl = S.P.excl.filter(x => x !== k); S.P.frozen = null; savePlan(); recalc(); updatePlan(); toast('Added ' + pn(k.split('||')[1]) + ' to the basket'); return; }
   if ((el = t.closest('[data-bk-rm]'))) { S.P.add = (S.P.add || []).filter(k => k !== el.dataset.bkRm); savePlan(); recalc(); updatePlan(); toast('Taken out of the basket'); return; }
   if ((el = t.closest('[data-unexcl]'))) { S.P.excl = S.P.excl.filter(x => x !== el.dataset.unexcl); savePlan(); recalc(); updatePlan(); return; }
   if ((el = t.closest('[data-x]'))) {

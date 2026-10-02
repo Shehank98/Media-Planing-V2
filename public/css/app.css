@@ -481,3 +481,5 @@ table.taxt{margin-left:auto}
 /* basket: footer with add picker */
 .bk-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding-top:6px}
 .bk-add{max-width:100%;min-width:0;flex:0 1 330px;font-size:12px;padding:5px 8px;border:1px dashed var(--accent);border-radius:7px;background:var(--panel);color:var(--accent)}
+.bk-sug{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:6px;padding:7px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) 8%,var(--panel));font-size:12.5px}
+.bk-sug .btn{margin-left:auto}
