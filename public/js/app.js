@@ -184,16 +184,16 @@ function vOverview(el) {
     ${kp('Average TVR', nf(sm.avgT, 2), 'per airing')}
     ${kp('Peak TVR', nf(sm.pk.tvr, 1), esc(pn(sm.pk.p)) + ', ' + esc(chName(sm.pk.ch)))}
     ${kp('Average reach', nf(sm.avgR, 2) + '%', 'per airing')}
-    ${kp('Total GRPs', ni(sm.sT), 'sum of TVR')}
+    ${kp('Days covered', dayDiff(S.FS.from, S.FS.to), fmtDate(S.FS.from) + ' – ' + fmtDate(S.FS.to))}
   </div>
   <div class="grid g-ov">
     ${panel('Channel performance', 'average per airing · click a bar', '<div class="chart lg"><canvas id="c-ch"></canvas></div>')}
     ${panel('Top programs', 'by average TVR, min 2 airings · click a row', `<div class="tw" style="max-height:340px;overflow:auto"><table><thead><tr><th>Program</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>Airings</th><th>Steadiness</th></tr></thead><tbody>${q.map(g => { const [c, p] = g.k.split('||'); return `<tr class="click" ${xa({ ch: c, p })}><td><div class="pn" title="${esc(pn(p))}">${esc(pn(p))}</div><span class="sub">${dot(c)}${esc(chName(c))} · ${hl(g.mxr.h)}</span></td><td>${nf(avgT(g), 2)}</td><td>${nf(g.mx, 1)}</td><td>${nf(avgR(g), 1)}</td><td>${g.n}</td><td>${stdTag(ciOf(g), g.n)}</td></tr>`; }).join('')}</tbody></table></div>`)}
-    ${panel('Category mix', 'share of total GRPs · click a slice', '<div class="chart lg"><canvas id="c-cat"></canvas></div>')}
+    ${panel('Category mix', 'share of all viewing (ratings) · click a slice', '<div class="chart lg"><canvas id="c-cat"></canvas></div>')}
   </div>
   <div class="grid g-wide">
-    ${panel('Daily trend', 'GRPs and average TVR per day · click a day', '<div class="chart"><canvas id="c-trend"></canvas></div>')}
-    ${panel('Dayparts', 'where the GRPs come from · click a row', `<table><thead><tr><th>Daypart</th><th>Airings</th><th>Avg TVR</th><th>Reach %</th><th>GRP share</th></tr></thead><tbody>${dps.map(g => `<tr class="click" ${xa({ dp: g.k })}><td>${esc(g.k)}</td><td>${ni(g.n)}</td><td>${nf(avgT(g), 2)}</td><td>${nf(avgR(g), 1)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${(g.sT / totG * 100).toFixed(0)}%"></div></div>${nf(g.sT / totG * 100, 0)}%</div></td></tr>`).join('')}</tbody></table>`)}
+    ${panel('Daily trend', 'average reach and rating per day · click a day', '<div class="chart"><canvas id="c-trend"></canvas></div>')}
+    ${panel('Dayparts', 'where the viewing happens · click a row', `<table><thead><tr><th>Daypart</th><th>Airings</th><th>Avg TVR</th><th>Reach %</th><th>Share of viewing</th></tr></thead><tbody>${dps.map(g => `<tr class="click" ${xa({ dp: g.k })}><td>${esc(g.k)}</td><td>${ni(g.n)}</td><td>${nf(avgT(g), 2)}</td><td>${nf(avgR(g), 1)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${(g.sT / totG * 100).toFixed(0)}%"></div></div>${nf(g.sT / totG * 100, 0)}%</div></td></tr>`).join('')}</tbody></table>`)}
   </div>`;
   mkChart('c-ch', {
     type: 'bar', data: {
@@ -207,16 +207,16 @@ function vOverview(el) {
   if (rest > 0) { labs.push('Other'); vals.push(rest); }
   mkChart('c-cat', {
     type: 'doughnut', data: { labels: labs, datasets: [{ data: vals, backgroundColor: [1, 2, 3, 4, 5, 6, 7, 9].map(i => css('--c' + i)), borderColor: css('--panel'), borderWidth: 2 }] },
-    options: { cutout: '58%', onClick: (e, els) => { if (els.length && els[0].index < topCat.length) openDetail({ cat: topCat[els[0].index].k }); }, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: c => ' ' + c.label + ': ' + ni(c.raw) + ' GRPs (' + nf(c.raw / totG * 100, 1) + '%)' } } } }
+    options: { cutout: '58%', onClick: (e, els) => { if (els.length && els[0].index < topCat.length) openDetail({ cat: topCat[els[0].index].k }); }, plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, font: { size: 11 } } }, tooltip: { callbacks: { label: c => ' ' + c.label + ': ' + nf(c.raw / totG * 100, 1) + '% of viewing' } } } }
   });
   const dates = [...grp(F, r => r.date).values()].sort((a, b) => a.k < b.k ? -1 : 1);
   mkChart('c-trend', {
     data: {
       labels: dates.map(g => fmtDate(g.k).slice(0, 6) + ' ' + g.mxr.day.slice(0, 2)), datasets: [
-        { type: 'bar', label: 'GRPs', data: dates.map(g => Math.round(g.sT)), backgroundColor: dates.map(g => DAYS.indexOf(g.mxr.day) >= 5 ? css('--heat') : css('--accent')), borderRadius: 2, yAxisID: 'y' },
+        { type: 'bar', label: 'Avg reach %', data: dates.map(g => +avgR(g).toFixed(2)), backgroundColor: dates.map(g => DAYS.indexOf(g.mxr.day) >= 5 ? css('--heat') : css('--accent')), borderRadius: 2, yAxisID: 'y' },
         { type: 'line', label: 'Avg TVR', data: dates.map(g => +avgT(g).toFixed(2)), borderColor: css('--ink'), backgroundColor: css('--ink'), pointRadius: 2, borderWidth: 1.5, tension: .25, yAxisID: 'y1' }]
     },
-    options: { onClick: (e, els) => els.length && openDetail({ date: dates[els[0].index].k }), plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }, scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }, y: { title: { display: true, text: 'GRPs' } }, y1: { position: 'right', grid: { display: false }, title: { display: true, text: 'Avg TVR' } } } }
+    options: { onClick: (e, els) => els.length && openDetail({ date: dates[els[0].index].k }), plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }, scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true } }, y: { beginAtZero: true, title: { display: true, text: 'Avg reach %' } }, y1: { position: 'right', beginAtZero: true, grid: { display: false }, title: { display: true, text: 'Avg TVR' } } } }
   });
 }
 
@@ -266,7 +266,7 @@ function vExplore(el) {
   <div class="grid g3">
     ${panel('Day of week', 'bars: mean reach % · line: peak TVR · click a day', '<div class="chart"><canvas id="c-day"></canvas></div>' + `<div class="chips" style="margin-top:8px">${bestDays.map((d, i) => `<button class="tag" ${xa({ day: d.k })}>#${i + 1} ${d.k.slice(0, 3)} · ${nf(avgR(d), 2)}% reach</button>`).join('')}</div>`)}
     ${panel('Average TVR by hour', 'all selected channels · click an hour', '<div class="chart"><canvas id="c-hr"></canvas></div>')}
-    ${panel('Dayparts by channel', 'GRP share of each channel', '<div class="chart"><canvas id="c-dpc"></canvas></div>')}
+    ${panel('Dayparts by channel', 'share of each channel\'s viewing by daypart', '<div class="chart"><canvas id="c-dpc"></canvas></div>')}
   </div>
   ${panel('Slot finder', `every program starting ${band(S.SF.h)} on the chosen channels`, `
     <div class="inl" style="margin-bottom:10px"><label class="inl"><span class="muted">Hour</span><select id="sf-h">${hopts.map(h => `<option value="${h}" ${h === S.SF.h ? 'selected' : ''}>${band(h)}</option>`).join('')}</select></label>
@@ -305,8 +305,8 @@ function vDrill(el) {
     const dim = L[depth];
     if (!dim) { // leaf: individual airings
       const ar = [...rows].sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.s < b.s ? -1 : 1);
-      ar.slice(0, 40).forEach(r => { html += `<tr class="air l${Math.min(depth, 3)}"><td>${r.date} ${r.day.slice(0, 3)} · ${r.s}${r.e ? '–' + r.e : ''} · ${esc(chName(r.ch))} · ${esc(pn(r.p))}</td><td>1</td><td>${nf(r.tvr, 2)}</td><td></td><td>${nf(r.rp, 2)}</td><td>${nf(r.tvr, 1)}</td><td></td><td></td></tr>`; });
-      if (ar.length > 40) html += `<tr class="air l${Math.min(depth, 3)}"><td colspan="8">… ${ar.length - 40} more airings. Open the detail view to see all.</td></tr>`;
+      ar.slice(0, 40).forEach(r => { html += `<tr class="air l${Math.min(depth, 3)}"><td>${r.date} ${r.day.slice(0, 3)} · ${r.s}${r.e ? '–' + r.e : ''} · ${esc(chName(r.ch))} · ${esc(pn(r.p))}</td><td>1</td><td>${nf(r.tvr, 2)}</td><td></td><td>${nf(r.rp, 2)}</td><td></td><td></td></tr>`; });
+      if (ar.length > 40) html += `<tr class="air l${Math.min(depth, 3)}"><td colspan="7">… ${ar.length - 40} more airings. Open the detail view to see all.</td></tr>`;
       return;
     }
     const D = DIMS[dim];
@@ -316,17 +316,17 @@ function vDrill(el) {
     gs.slice(0, lim).forEach(g => {
       const p = path + '¦' + g.k, open = S.DR.open.has(p), f = Object.assign({}, fixed, { [dim]: g.k });
       const share = g.sT / (parentT || 1) * 100;
-      html += `<tr class="l${Math.min(depth, 3)} ${depth === 0 ? 'l0' : ''}"><td><button class="tg" data-tg="${esc(p)}" aria-label="${open ? 'Collapse' : 'Expand'}">${open ? '▼' : '▶'}</button>${dim === 'ch' ? dot(g.k) : ''}<button class="nm" data-tg="${esc(p)}">${esc(D.name(g.k))}</button></td><td>${ni(g.n)}</td><td>${nf(avgT(g), 2)}</td><td>${nf(g.mx, 1)}</td><td>${nf(avgR(g), 2)}</td><td>${ni(g.sT)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${Math.min(100, share).toFixed(0)}%;background:${dim === 'ch' ? cv(g.k) : 'var(--accent)'}"></div></div>${nf(share, 1)}%</div></td><td><button class="ib" ${xa(f)} title="Open detail">Detail ›</button></td></tr>`;
+      html += `<tr class="l${Math.min(depth, 3)} ${depth === 0 ? 'l0' : ''}"><td><button class="tg" data-tg="${esc(p)}" aria-label="${open ? 'Collapse' : 'Expand'}">${open ? '▼' : '▶'}</button>${dim === 'ch' ? dot(g.k) : ''}<button class="nm" data-tg="${esc(p)}">${esc(D.name(g.k))}</button></td><td>${ni(g.n)}</td><td>${nf(avgT(g), 2)}</td><td>${nf(g.mx, 1)}</td><td>${nf(avgR(g), 2)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${Math.min(100, share).toFixed(0)}%;background:${dim === 'ch' ? cv(g.k) : 'var(--accent)'}"></div></div>${nf(share, 1)}%</div></td><td><button class="ib" ${xa(f)} title="Open detail">Detail ›</button></td></tr>`;
       if (open) render(g.k === undefined ? [] : rows.filter(r => D.key(r) === g.k), depth + 1, p, g.sT, f);
     });
-    if (gs.length > lim) html += `<tr class="air"><td colspan="8">… ${gs.length - lim} more</td></tr>`;
+    if (gs.length > lim) html += `<tr class="air"><td colspan="7">… ${gs.length - lim} more</td></tr>`;
   };
   render(F, 0, '', tot, {});
   el.innerHTML = `
-  <div class="vhead"><div><h2>Drill down</h2><p>Expand any row to break it down further. The last level opens individual airings. Share is of the parent row's GRPs.</p></div>
+  <div class="vhead"><div><h2>Drill down</h2><p>Expand any row to break it down further. The last level opens individual airings. Share = this row's share of the parent row's viewing (ratings).</p></div>
     <span class="push"><button class="btn sm" id="dr-exp">Expand level 1</button><button class="btn sm" id="dr-col">Collapse all</button></span></div>
   ${panel('Breakdown', '', `<div class="inl" style="margin-bottom:10px"><span class="muted">Level 1</span>${opts(0, L[0])}<span class="muted">▸ Level 2</span>${opts(1, L[1] || '')}<span class="muted">▸ Level 3</span>${opts(2, L[2] || '')}<span class="muted">▸ airings</span></div>
-    <div class="tw"><table class="tree"><thead><tr><th>${L.map(k => DIMS[k].label).join(' ▸ ')}</th><th>Airings</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>GRPs</th><th>Share of parent</th><th></th></tr></thead><tbody>${html}</tbody></table></div>`)}`;
+    <div class="tw"><table class="tree"><thead><tr><th>${L.map(k => DIMS[k].label).join(' ▸ ')}</th><th>Airings</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>Share of parent</th><th></th></tr></thead><tbody>${html}</tbody></table></div>`)}`;
 }
 
 /* ---------- Planner ---------- */
@@ -420,7 +420,7 @@ function updatePlan() {
   const warn = S.health.filter(h => h.t === 'wa').length;
   const m = (l, v, cls = '', t = '') => `<div class="m ${cls}" title="${t}"><small>${l}</small><b>${v}</b></div>`;
   $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', 'hl', 'Reached at least once') + m('Reach 3+', nf(A.r3, 1) + '%', '', 'Reached at least 3 times') + m('Budget used', lkr(A.spent)) +
-    m('Channels', A.chs.length) + m('Programs', A.kept.length) + m('Spots', ni(A.spots)) + m('GRPs', ni(A.grps)) + m('Avg frequency', nf(A.freq, 1) + 'x') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK');
+    m('Channels', A.chs.length) + m('Programs', A.kept.length) + m('Spots', ni(A.spots)) + m('Avg frequency', nf(A.freq, 1) + 'x') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK');
   const full = P.cut > 0 ? ` <span class="muted" style="font-size:12px">(full budget ${nf(base.net, 1)}%)</span>` : '';
   $('#pl-net').innerHTML = `<div class="bigline"><b>${nf(A.net, 1)}%</b><span class="muted">reached at least once${full}</span></div>
     <div class="flow"><div><b>${nf(A.gross, 1)}%</b><small>Gross reach</small></div><i>−</i><div><b>${nf(A.gross - A.net, 1)} pts</b><small>Same viewers</small></div><i>=</i><div><b style="color:var(--accent)">${nf(A.net, 1)}%</b><small>Net reach</small></div></div>
@@ -514,7 +514,7 @@ function renderFlight() {
   const wkDate = w => { const d = new Date(new Date(Sc.start + 'T12:00:00').getTime() + w * 7 * 864e5); return fmtDate(d.toISOString().slice(0, 10)).slice(0, 6); };
   if (S.fv === 'days') {
     const rows = Sc.rows;
-    el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th>Spots</th><th>Cost</th><th>GRPs</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td><td>${nf(r.grps, 1)}</td></tr>`).join('')}</tbody></table></div>
+    el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th>Spots</th><th>Cost</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td></tr>`).join('')}</tbody></table></div>
       <p class="hint">${Sc.clashes} night${Sc.clashes === 1 ? ' has' : 's have'} rival channels in the same hour (${P.same === 'roadblock' ? 'roadblock, by design' : 'kept low by staggering'}). Days follow each program's air days in the data.</p>`;
     return;
   }
@@ -523,8 +523,7 @@ function renderFlight() {
     ${Sc.grid.slice(0, S.BK.flAll ? Sc.grid.length : 8).map(g => `<tr><td><div class="pn">${esc(pn(g.x.p))}</div><span class="sub">${dot(g.x.ch)}${esc(chName(g.x.ch))} · ${hl(g.x.hour)}</span></td><td>${tierTag(g.x.tier)}</td>${g.alloc.map(n => `<td style="${n ? '' : 'color:var(--muted)'}">${n || '·'}</td>`).join('')}<td><b>${g.x.spots}</b></td></tr>`).join('')}
     ${Sc.grid.length > 8 ? `<tr><td colspan="${Sc.weeks.length + 3}"><button class="link" data-flall>${S.BK.flAll ? 'Show top 8 only' : `Show all ${Sc.grid.length} programmes`}</button></td></tr>` : ''}
     <tr><td><b>Spots</b></td><td></td>${Sc.weeks.map(w => `<td><b>${w.spots}</b></td>`).join('')}<td><b>${A.spots}</b></td></tr>
-    <tr><td><b>Budget</b></td><td></td>${Sc.weeks.map(w => `<td>${lkr(w.bud).replace('LKR ', '')}</td>`).join('')}<td><b>${lkr(A.spent).replace('LKR ', '')}</b></td></tr>
-    <tr><td><b>GRPs</b></td><td></td>${Sc.weeks.map(w => `<td>${ni(w.grps)}</td>`).join('')}<td><b>${ni(A.grps)}</b></td></tr></tbody></table></div>`;
+    <tr><td><b>Budget</b></td><td></td>${Sc.weeks.map(w => `<td>${lkr(w.bud).replace('LKR ', '')}</td>`).join('')}<td><b>${lkr(A.spent).replace('LKR ', '')}</b></td></tr></tbody></table></div>`;
   const chs = A.chs.map(c => c.ch);
   mkChart('c-flight', {
     type: 'bar', data: { labels: Sc.weeks.map((_, i) => 'W' + (i + 1) + ' ' + wkDate(i)), datasets: chs.map(ch => ({ label: chName(ch), data: Sc.weeks.map(w => w.byCh[ch] || 0), backgroundColor: cc(ch), borderRadius: 2 })) },
@@ -533,8 +532,8 @@ function renderFlight() {
 }
 function scheduleCSV() {
   const r = S.sched.rows;
-  return toCSV(['Week', 'Date', 'Day', 'Time band', 'Channel', 'Program', 'Tier', 'Spots', 'Spot length (sec)', 'Cost LKR', 'Est. GRPs'],
-    r.map(x => [x.week, x.date, x.day, band(x.hour), chName(x.ch), pn(x.p), 'Tier ' + x.tier, x.spots, S.P.spotLen, Math.round(x.cost), x.grps.toFixed(1)]));
+  return toCSV(['Week', 'Date', 'Day', 'Time band', 'Channel', 'Program', 'Tier', 'Spots', 'Spot length (sec)', 'Cost LKR'],
+    r.map(x => [x.week, x.date, x.day, band(x.hour), chName(x.ch), pn(x.p), 'Tier ' + x.tier, x.spots, S.P.spotLen, Math.round(x.cost)]));
 }
 function memo(A, base) {
   const L = [], P = S.P;
@@ -547,7 +546,7 @@ function memo(A, base) {
     const a = A.chs[0], b = A.chs[1], d = getD(a.ch, b.ch);
     L.push(`<p><b>Duplication:</b> ${esc(chName(a.ch))} and ${esc(chName(b.ch))} share about ${nf(d * 100, 0)}% of viewers in this model; ${nf(A.loss * 100, 0)}% of gross reach is overlap.</p>`);
   }
-  L.push(`<p><b>Delivery:</b> ${ni(A.spots)} spots of ${P.spotLen} sec, ${ni(A.grps)} GRPs, net reach ${nf(A.net, 1)}%, reach 3+ ${nf(A.r3, 1)}%, average frequency ${nf(A.freq, 1)}x.</p>`);
+  L.push(`<p><b>Delivery:</b> ${ni(A.spots)} spots of ${P.spotLen} sec, net reach ${nf(A.net, 1)}%, reach 3+ ${nf(A.r3, 1)}%, average frequency ${nf(A.freq, 1)}x.</p>`);
   if (S.sched) L.push(`<p><b>Flighting:</b> ${A.W} weeks from ${fmtDate(S.sched.start)}, ${P.pacing} pacing (${S.sched.weeks.map(w => w.spots).join(' / ')} spots per week), max ${P.capWk} spots per program per week. Rival same-hour spots are ${P.same === 'roadblock' ? 'roadblocked on the same nights for reach' : 'staggered across nights for frequency'}.</p>`);
   if (P.cut > 0) L.push(`<p><b>Budget cut of ${P.cut}%:</b> net reach ${nf(base.net, 1)}% → ${nf(A.net, 1)}%, reach 3+ ${nf(base.r3, 1)}% → ${nf(A.r3, 1)}%. The cut removes repeat spots first, so frequency falls faster than reach.</p>`);
   const rv = A.kept.filter(x => x.role === 'review');
@@ -562,7 +561,7 @@ function snapshot(name, A, P, FS) {
     id: Date.now().toString(36), name, created: new Date().toISOString(),
     P: JSON.parse(JSON.stringify(P)),
     FS: { from: FS.from, to: FS.to, ch: [...FS.ch], cat: [...FS.cat], day: [...FS.day], h0: FS.h0, h1: FS.h1, minTvr: FS.minTvr, q: FS.q, p: FS.p },
-    r: { B: A.B, spent: A.spent, net: A.net, r3: A.r3, gross: A.gross, loss: A.loss, spots: A.spots, grps: A.grps, freq: A.freq, tiers: A.tiers.map(t => ({ t: t.t, target: t.target, actual: t.actual })), chs: A.chs.map(c => ({ ch: c.ch, w: c.w, bud: c.bud })), items: A.kept.map(x => ({ ch: x.ch, p: x.p, k: x.k, bud: x.bud, spots: x.spots, mean: x.mean, rp: x.rp, ci: x.ci, role: x.role, tier: x.tier, hour: x.hour, cat: x.cat, n: x.n, days: x.days })) }
+    r: { B: A.B, spent: A.spent, net: A.net, r3: A.r3, gross: A.gross, loss: A.loss, spots: A.spots, freq: A.freq, tiers: A.tiers.map(t => ({ t: t.t, target: t.target, actual: t.actual })), chs: A.chs.map(c => ({ ch: c.ch, w: c.w, bud: c.bud })), items: A.kept.map(x => ({ ch: x.ch, p: x.p, k: x.k, bud: x.bud, spots: x.spots, mean: x.mean, rp: x.rp, ci: x.ci, role: x.role, tier: x.tier, hour: x.hour, cat: x.cat, n: x.n, days: x.days })) }
   };
 }
 function saveScenario(name, A, P = S.P, FS = S.FS) {
@@ -588,7 +587,7 @@ function vScen(el) {
       ${!isCur && cur ? `<div class="delta ${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '+' : ''}${nf(d, 1)}% reach vs current · ${nf((r.B / cur.r.B - 1) * 100, 0)}% budget</div>` : '<div class="delta muted">live, follows your filters and settings</div>'}
       <div class="mini">${r.chs.map(c => `<div style="width:${(c.w * 100).toFixed(1)}%;background:${cv(c.ch)}"></div>`).join('')}</div>
       <div class="foot">${r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</div>
-      <div class="foot">${r.items.length} programs${r.spots ? ' · ' + ni(r.spots) + ' spots · ' + ni(r.grps) + ' GRPs' : ''}</div>
+      <div class="foot">${r.items.length} programs${r.spots ? ' · ' + ni(r.spots) + ' spots' : ''}</div>
       <div class="acts">${isCur ? `<button class="btn sm pri" id="sc-save">Save current</button>` : `<button class="btn sm" data-sc-load="${sc.id}">Load</button><button class="btn sm ${S.cmp === sc.id ? 'pri' : ''}" data-sc-cmp="${sc.id}">Compare</button><button class="btn sm" data-sc-csv="${sc.id}">CSV</button><button class="btn sm danger" data-sc-del="${sc.id}">Delete</button>`}</div></div>`;
   };
   const quick = [10, 25, 40].map(c => ({ c, r: S.cur ? simulate({ cut: c }) : null }));
@@ -627,14 +626,14 @@ function compareHTML(a, b) {
   if (!ch.length) ch.push(`<li><span class="ic in">i</span><span>Same channels and programs; only the numbers differ.</span></li>`);
   return `<div class="grid g2">${panel(`Compare: current vs "${esc(b.name)}"`, '', `<table><thead><tr><th>Metric</th><th>Current</th><th>${esc(b.name)}</th><th>Difference</th></tr></thead><tbody>
     ${row('Net reach %', ra.net, rb.net, v => nf(v, 1))}${ra.r3 != null && rb.r3 != null ? row('Reach 3+ %', ra.r3, rb.r3, v => nf(v, 1)) : ''}${row('Gross reach %', ra.gross, rb.gross, v => nf(v, 1))}${row('Budget (LKR M)', ra.B / 1e6, rb.B / 1e6, v => nf(v, 2))}
-    ${row('Programs', ra.items.length, rb.items.length, v => ni(v))}${row('Channels', ra.chs.length, rb.chs.length, v => ni(v))}${ra.spots || rb.spots ? row('Est. spots', ra.spots, rb.spots, v => ni(v)) + row('Est. GRPs', ra.grps, rb.grps, v => ni(v)) : ''}
+    ${row('Programs', ra.items.length, rb.items.length, v => ni(v))}${row('Channels', ra.chs.length, rb.chs.length, v => ni(v))}${ra.spots || rb.spots ? row('Est. spots', ra.spots, rb.spots, v => ni(v)) : ''}
     ${row('Net reach per LKR 1M', ra.net / (ra.B / 1e6 || 1), rb.net / (rb.B / 1e6 || 1), v => nf(v, 2))}</tbody></table>`)}
     ${panel(`What changes in "${esc(b.name)}"`, 'compared with the current plan', `<ul class="health">${ch.join('')}</ul>`)}</div>`;
 }
 function planCSV(sc) {
   const r = sc.r;
-  const rows = r.items.map(x => [chName(x.ch), pn(x.p), x.tier ? 'Tier ' + x.tier : '', pn(x.cat), band(x.hour), (x.days || []).map(d => d.slice(0, 3)).join(' '), x.n, x.mean.toFixed(2), x.rp.toFixed(2), x.ci.toFixed(1), x.role, (x.k * 100).toFixed(1), Math.round(x.bud), x.spots, Math.round(x.spots * x.mean)]);
-  const head = ['Channel', 'Program', 'Tier', 'Category', 'Usual slot', 'Days aired', 'Airings in data', 'Avg TVR', 'Avg reach %', 'Steadiness', 'Role', 'Share of plan %', 'Budget LKR', 'Est. spots', 'Est. GRPs'];
+  const rows = r.items.map(x => [chName(x.ch), pn(x.p), x.tier ? 'Tier ' + x.tier : '', pn(x.cat), band(x.hour), (x.days || []).map(d => d.slice(0, 3)).join(' '), x.n, x.mean.toFixed(2), x.rp.toFixed(2), x.ci.toFixed(1), x.role, (x.k * 100).toFixed(1), Math.round(x.bud), x.spots]);
+  const head = ['Channel', 'Program', 'Tier', 'Category', 'Usual slot', 'Days aired', 'Airings in data', 'Avg TVR', 'Avg reach %', 'Steadiness', 'Role', 'Share of plan %', 'Budget LKR', 'Est. spots'];
   const top = [['Plan', sc.name], ['Budget LKR', Math.round(r.B)], ['Est. net reach %', r.net.toFixed(1)], ['Reach 3+ %', r.r3 != null ? r.r3.toFixed(1) : ''], ['Gross reach %', r.gross.toFixed(1)], ['Split', r.chs.map(c => chName(c.ch) + ' ' + (c.w * 100).toFixed(0) + '%').join('; ')], []];
   return toCSV(['TV Media Planner', 'export ' + new Date().toISOString().slice(0, 10)], top) + '\n' + toCSV(head, rows);
 }
@@ -836,7 +835,7 @@ function renderDetail() {
   if (by) {
     const D = DIMS[by];
     const gs = [...grp(rows, D.key).values()].sort(D.order ? (a, b) => D.order(a.k, b.k) : (a, b) => b.sT - a.sT);
-    bt = `<div class="tw" style="max-height:340px;overflow:auto"><table><thead><tr><th>${D.label}</th><th>Airings</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>Share %</th><th>Steadiness</th><th>GRP share</th></tr></thead><tbody>${gs.slice(0, 150).map(x => `<tr class="click" ${xa(Object.assign({}, f, { [by]: x.k }))} data-push="1"><td>${by === 'ch' ? dot(x.k) : ''}${esc(D.name(x.k))}${by === 'p' ? `<span class="sub">${esc(chName(x.mxr.ch))} · ${hl(modeH(x))}</span>` : ''}</td><td>${x.n}</td><td>${nf(avgT(x), 2)}</td><td>${nf(x.mx, 1)}</td><td>${nf(avgR(x), 1)}</td><td>${nf(avgS(x), 1)}</td><td>${stdTag(ciOf(x), x.n)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.sT / totT * 100).toFixed(0)}%"></div></div>${nf(x.sT / totT * 100, 1)}%</div></td></tr>`).join('')}</tbody></table></div>`;
+    bt = `<div class="tw" style="max-height:340px;overflow:auto"><table><thead><tr><th>${D.label}</th><th>Airings</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>Share %</th><th>Steadiness</th><th>Share of viewing</th></tr></thead><tbody>${gs.slice(0, 150).map(x => `<tr class="click" ${xa(Object.assign({}, f, { [by]: x.k }))} data-push="1"><td>${by === 'ch' ? dot(x.k) : ''}${esc(D.name(x.k))}${by === 'p' ? `<span class="sub">${esc(chName(x.mxr.ch))} · ${hl(modeH(x))}</span>` : ''}</td><td>${x.n}</td><td>${nf(avgT(x), 2)}</td><td>${nf(x.mx, 1)}</td><td>${nf(avgR(x), 1)}</td><td>${nf(avgS(x), 1)}</td><td>${stdTag(ciOf(x), x.n)}</td><td><div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.sT / totT * 100).toFixed(0)}%"></div></div>${nf(x.sT / totT * 100, 1)}%</div></td></tr>`).join('')}</tbody></table></div>`;
   }
   const airs = [...rows].sort((a, b) => b.date < a.date ? -1 : b.date > a.date ? 1 : a.s < b.s ? -1 : 1);
   const inPlan = S.cur && progKey && S.cur.kept.find(x => x.key === progKey);
@@ -849,7 +848,7 @@ function renderDetail() {
     </div>
     <div class="kpis" style="grid-template-columns:repeat(3,minmax(0,1fr))">
       ${kp('Airings', ni(sm.n), sm.progs + ' program' + (sm.progs > 1 ? 's' : '') + ' · ' + sm.chs + ' channel' + (sm.chs > 1 ? 's' : ''))}
-      ${kp('Average TVR', nf(sm.avgT, 2), 'GRPs ' + ni(sm.sT))}
+      ${kp('Average TVR', nf(sm.avgT, 2), 'per airing')}
       ${kp('Peak TVR', nf(sm.pk.tvr, 1), esc(sm.pk.date + ' ' + sm.pk.s + (isProg ? '' : ' · ' + pn(sm.pk.p))))}
       ${kp('Average reach', nf(sm.avgR, 2) + '%', 'per airing')}
       ${kp('Steadiness', g.n >= 2 ? nf(ci, 1) : '—', stdy.label)}

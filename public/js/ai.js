@@ -6,10 +6,10 @@ export function buildContext(S) {
   const F = S.F;
   const sm = summarize(F);
   const r2 = v => Math.round(v * 100) / 100;
-  const chans = [...grp(F, r => r.ch).values()].sort((a, b) => avgT(b) - avgT(a)).map(g => ({ channel: g.k, airings: g.n, avgTVR: r2(avgT(g)), avgReachPct: r2(avgR(g)), GRPs: Math.round(g.sT) }));
+  const chans = [...grp(F, r => r.ch).values()].sort((a, b) => avgT(b) - avgT(a)).map(g => ({ channel: g.k, airings: g.n, avgTVR: r2(avgT(g)), avgReachPct: r2(avgR(g)) }));
   const hours = [...grp(F, r => r.h).values()].sort((a, b) => a.k - b.k).map(g => ({ hour: hl(g.k), h24: g.k, airings: g.n, avgTVR: r2(avgT(g)), avgReachPct: r2(avgR(g)) }));
   const days = [...grp(F, r => r.day).values()].sort((a, b) => DAYS.indexOf(a.k) - DAYS.indexOf(b.k)).map(g => ({ day: g.k, avgTVR: r2(avgT(g)), avgReachPct: r2(avgR(g)), peakTVR: r2(g.mx) }));
-  const cats = [...grp(F, r => r.cat).values()].sort((a, b) => b.sT - a.sT).slice(0, 10).map(g => ({ category: g.k, GRPs: Math.round(g.sT), avgTVR: r2(avgT(g)) }));
+  const cats = [...grp(F, r => r.cat).values()].sort((a, b) => b.sT - a.sT).slice(0, 10).map(g => ({ category: g.k, shareOfViewingPct: r2(g.sT / (F.reduce((a, r) => a + r.tvr, 0) || 1) * 100), avgTVR: r2(avgT(g)) }));
   const progs = [...grp(F, r => r.ch + '||' + r.p).values()].filter(g => g.n >= 2).sort((a, b) => avgT(b) - avgT(a)).slice(0, 25)
     .map(g => { const [ch, p] = g.k.split('||'); return { program: p, channel: ch, airings: g.n, avgTVR: r2(avgT(g)), peakTVR: r2(g.mx), avgReachPct: r2(avgR(g)), consistency: r2(ciOf(g)), category: g.mxr.cat, usualHour: hl(g.mxr.h) }; });
   const daytime = F.filter(r => r.h >= 6 && r.h < 17).sort((a, b) => b.tvr - a.tvr).slice(0, 5).map(r => ({ program: r.p, channel: r.ch, date: r.date, start: r.s, TVR: r.tvr }));
@@ -20,7 +20,7 @@ export function buildContext(S) {
     strategy: S.P.strategy, tiers: A.tiers.map(t => ({ tier: t.t, targetPct: t.target, actualPct: r2(t.actual), programsBought: t.n })), tier1MinTVR: r2(A.thr.t1), tier3BelowTVR: r2(A.thr.t3),
     maxSpotsPerProgramPerWeek: S.P.capWk, dayparts: A.dps.filter(d => d.present).map(d => ({ daypart: d.d, minPct: d.min, maxPct: r2(d.max), actualPct: r2(d.actual) })),
     flighting: S.sched ? { weeks: A.W, start: S.sched.start, pacing: S.P.pacing, sameHourRivals: S.P.same, spotsPerWeek: S.sched.weeks.map(w => w.spots) } : null,
-    estSpots: A.spots, estGRPs: Math.round(A.grps), costPerRatingPointLKR: S.P.cprp,
+    estSpots: A.spots, costPerRatingPointLKR: S.P.cprp,
     split: A.chs.map(c => ({ channel: c.ch, sharePct: r2(c.w * 100), budgetLKR: Math.round(c.bud) })),
     basket: A.kept.map(x => ({ program: x.p, channel: x.ch, tier: x.tier, spots: x.spots, role: x.role, sharePct: r2(x.k * 100), avgTVR: r2(x.mean), consistency: r2(x.ci), usualHour: hl(x.hour) })),
     droppedByCut: A.dropped.map(x => x.p),
@@ -28,7 +28,7 @@ export function buildContext(S) {
   } : null;
   return {
     filters: { from: S.FS.from, to: S.FS.to, channels: [...S.FS.ch], days: [...S.FS.day], hours: hl(S.FS.h0) + ' to ' + hl(S.FS.h1), categoriesSelected: S.FS.cat.size + ' of ' + S.CATS.length },
-    totals: { airings: sm.n, programs: sm.progs, avgTVR: r2(sm.avgT), avgReachPct: r2(sm.avgR), totalGRPs: Math.round(sm.sT) },
+    totals: { airings: sm.n, programs: sm.progs, avgTVR: r2(sm.avgT), avgReachPct: r2(sm.avgR) },
     allChannels: S.CH, channels: chans, hours, days, topCategories: cats, topPrograms: progs, daytimeSleeperHits: daytime, currentPlan: plan
   };
 }

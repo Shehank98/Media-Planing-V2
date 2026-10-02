@@ -257,7 +257,7 @@ export async function buildDeck(S, simulate, opts = {}) {
     ['Reach', 'The share of people who see the ad at least once.', `This plan: about ${nf(A.net, 0)} in 100 viewers.`],
     ['Frequency', 'How many times, on average, a reached person sees the ad.', `This plan: about ${nf(A.freq, 1)} times.`],
     ['Reach 3+', 'The share who see the ad at least three times. Repetition helps people remember.', `This plan: ${nf(A.r3, 0)} in 100 viewers.`],
-    ['GRPs', 'All ratings bought, added up (spots × rating). Shows total weight.', `This plan: ${ni(A.grps)} GRPs.`],
+    ['Spot', 'One placement of the ad in a programme\'s ad break.', `This plan: ${ni(A.spots)} spots over ${A.W} weeks.`],
     ['Duplication', 'People who watch more than one of our channels. We count them only once.', `${nf(A.loss * 100, 0)}% of the combined channel audiences overlap.`],
     ['Daypart', 'A part of the day: morning, daytime, prime time (6–10 PM) or late night.', `Prime time holds ${nf(X.primeShare, 0)}% of all TV viewing.`],
     ['Tier', 'A group of programmes by audience size: big (1), mid-sized (2), smaller (3).', `Tier 1 shows have a rating of ${nf(A.thr.t1, 1)} or more.`]].forEach((t, i) => {

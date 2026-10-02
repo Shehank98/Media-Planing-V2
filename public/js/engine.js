@@ -223,7 +223,7 @@ export function planCalc(rows, P) {
 // week), then minimum shares (manual channel shares, daypart minimums), then each tier up to
 // its budget, then any leftover across tiers. Caps: spots per program per week, programs per
 // channel per tier, daypart maximums, manual channel shares and the budget itself.
-export function scen(plan, f, P, getD, dIntra) {
+export function scen(plan, f, P, getD, dIntra, trace) {
   const B = P.budget * f, W = Math.max(1, Math.round(P.weeks || 4));
   const wts = pacingWeights(P.pacing, W), act = wts.filter(w => w > 0).length;
   const capTot = Math.max(1, Math.round(P.capWk || 3)) * act;
@@ -255,31 +255,33 @@ export function scen(plan, f, P, getD, dIntra) {
   const ok = x => spent + x.cost <= B + E && x.cnt < capTot && (x.cnt > 0 || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
     dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && (chFix[x.ch] == null || chSp[x.ch] + x.cost <= chFix[x.ch] * B + E);
   const gain = x => { const R = chR(x.ch, x, x.cnt + 1); return (alpha * (net(x.ch, R) - curNet) + (1 - alpha) * x.mean) * x.sf / x.cost; };
-  const take = x => { if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
+  let phase = '';
+  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
   const fill = (pool, extra) => {
     for (;;) {
       let best = null, bg = -Infinity;
       for (const x of pool) { if (!ok(x) || (extra && !extra(x))) continue; const g = gain(x); if (g > bg) { bg = g; best = x; } }
-      if (!best) break; take(best);
+      if (!best) break; take(best, bg);
     }
   };
-  items.filter(x => x.locked).forEach(x => { while (x.cnt < act && ok(x)) take(x); });
+  phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < act && ok(x)) take(x, null); });
+  phase = 'minimums';
   Object.keys(chFix).forEach(ch => fill(byCh.get(ch) || [], x => chSp[ch] + x.cost <= chFix[ch] * B + E));
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
-  [1, 2, 3].forEach(t => fill(items.filter(x => x.tier === t), x => tierSp[t] + x.cost <= tiers[t - 1] / 100 * B + E));
-  fill(items);
+  [1, 2, 3].forEach(t => (phase = 'tier' + t) && fill(items.filter(x => x.tier === t), x => tierSp[t] + x.cost <= tiers[t - 1] / 100 * B + E));
+  phase = 'leftover'; fill(items);
 
   const tot = spent || 1;
-  const kept = items.filter(x => x.cnt > 0).map(x => ({ ...x, spots: x.cnt, bud: x.cnt * x.cost, grps: x.cnt * x.mean, R: progR(x, x.cnt), k: x.cnt * x.cost / tot, atCap: x.cnt >= capTot }))
+  const kept = items.filter(x => x.cnt > 0).map(x => ({ ...x, spots: x.cnt, bud: x.cnt * x.cost, views: x.cnt * x.mean, R: progR(x, x.cnt), k: x.cnt * x.cost / tot, atCap: x.cnt >= capTot }))
     .sort((a, b) => b.bud - a.bud);
   const m = new Map();
-  kept.forEach(x => { let c = m.get(x.ch); if (!c) { c = { ch: x.ch, w: 0, bud: 0, progs: [], spots: 0, grps: 0, R: chRv.get(x.ch) }; m.set(x.ch, c); } c.w += x.k; c.bud += x.bud; c.spots += x.spots; c.grps += x.grps; c.progs.push(x); });
+  kept.forEach(x => { let c = m.get(x.ch); if (!c) { c = { ch: x.ch, w: 0, bud: 0, progs: [], spots: 0, views: 0, R: chRv.get(x.ch) }; m.set(x.ch, c); } c.w += x.k; c.bud += x.bud; c.spots += x.spots; c.views += x.views; c.progs.push(x); });
   const chs = [...m.values()].sort((a, b) => b.w - a.w);
-  const gross = chs.reduce((a, c) => a + c.R, 0), grps = kept.reduce((a, x) => a + x.grps, 0);
+  const gross = chs.reduce((a, c) => a + c.R, 0), views = kept.reduce((a, x) => a + x.views, 0);
   return {
     B, f, spent, unspent: Math.max(0, B - spent), kept, dropped: [], chs, gross, net: curNet,
-    loss: gross > 0 ? (gross - curNet) / gross : 0, eff: B > 0 ? curNet / (B / 1e6) : 0, grps, spots: kept.reduce((a, x) => a + x.spots, 0),
-    freq: curNet > 0 && grps > 0 ? grps / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? grps / curNet : 0, 3), capTot, act, W, thr: plan.thr, relaxed,
+    loss: gross > 0 ? (gross - curNet) / gross : 0, eff: B > 0 ? curNet / (B / 1e6) : 0, views, spots: kept.reduce((a, x) => a + x.spots, 0),
+    freq: curNet > 0 && views > 0 ? views / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? views / curNet : 0, 3), capTot, act, W, thr: plan.thr, relaxed,
     tiers: [1, 2, 3].map(t => ({ t, target: tiers[t - 1], actual: tierSp[t] / tot * 100, n: kept.filter(x => x.tier === t).length, avail: items.filter(x => x.tier === t).length })),
     dps: DPS.map(d => ({ d, present: present.has(d), min: dpMin[d] * 100, max: dpMax[d] * 100, actual: dpSp[d] / tot * 100 }))
   };
@@ -305,7 +307,7 @@ export function buildSchedule(A, P) {
   const start = new Date((P.start || new Date().toISOString().slice(0, 10)) + 'T12:00:00');
   const sDow = (start.getDay() + 6) % 7;
   const occ = new Map(), rows = [], grid = [];
-  const weeks = Array.from({ length: W }, () => ({ spots: 0, bud: 0, grps: 0, byCh: {} }));
+  const weeks = Array.from({ length: W }, () => ({ spots: 0, bud: 0, views: 0, byCh: {} }));
   A.kept.forEach((x, pi) => {
     // Largest-remainder split by weight (ties rotate by program so even pacing stays even),
     // then spill anything above the weekly cap.
@@ -328,9 +330,9 @@ export function buildSchedule(A, P) {
       }
       Object.keys(used).sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b)).forEach(d => {
         const dt = new Date(start.getTime() + (w * 7 + (DAYS.indexOf(d) - sDow + 7) % 7) * 864e5);
-        rows.push({ week: w + 1, date: dt.toISOString().slice(0, 10), day: d, ch: x.ch, p: x.p, hour: x.hour, tier: x.tier, spots: used[d], cost: used[d] * x.cost, grps: used[d] * x.mean });
+        rows.push({ week: w + 1, date: dt.toISOString().slice(0, 10), day: d, ch: x.ch, p: x.p, hour: x.hour, tier: x.tier, spots: used[d], cost: used[d] * x.cost, views: used[d] * x.mean });
       });
-      const wk = weeks[w]; wk.spots += n; wk.bud += n * x.cost; wk.grps += n * x.mean; wk.byCh[x.ch] = (wk.byCh[x.ch] || 0) + n;
+      const wk = weeks[w]; wk.spots += n; wk.bud += n * x.cost; wk.views += n * x.mean; wk.byCh[x.ch] = (wk.byCh[x.ch] || 0) + n;
     });
   });
   rows.sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : a.hour - b.hour);
@@ -401,7 +403,7 @@ export function insights(rows) {
   }
   const cats = [...grp(rows, r => r.cat).values()].sort((a, b) => b.sT - a.sT);
   const tot = cats.reduce((s, g) => s + g.sT, 0) || 1;
-  if (cats.length) out.push({ big: nf(cats[0].sT / tot * 100, 0) + '%', t: `of all viewing (GRPs) comes from ${pn(cats[0].k)}, the biggest category.`, cls: 'g', drill: { cat: cats[0].k } });
+  if (cats.length) out.push({ big: nf(cats[0].sT / tot * 100, 0) + '%', t: `of all viewing comes from ${pn(cats[0].k)}, the biggest category.`, cls: 'g', drill: { cat: cats[0].k } });
   const day = rows.filter(r => r.h < 17 && r.h >= 6).sort((a, b) => b.tvr - a.tvr)[0];
   if (day && day.tvr >= 2) out.push({ big: nf(day.tvr, 1), t: `TVR daytime sleeper hit: ${pn(day.p)} on ${chName(day.ch)} at ${day.s}.`, cls: 'p', drill: { ch: day.ch, p: day.p } });
   return out;

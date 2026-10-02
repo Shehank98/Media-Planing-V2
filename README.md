@@ -23,7 +23,7 @@ Every chart bar, heatmap cell, table row and insight card opens a **detail drawe
 
 ### Client deck (PowerPoint)
 "Export deck (PPTX)" (Planner or Scenarios tab) asks for client, campaign and "prepared by", then builds a client-ready deck in the browser (pptxgenjs, loaded on demand from jsDelivr). It is written for non-technical readers:
-- Cover, agenda, executive summary with the decision needed, and a plain-English glossary (TVR, reach, frequency, reach 3+, GRPs, duplication, daypart, tier) using examples from the plan.
+- Cover, agenda, executive summary with the decision needed, and a plain-English glossary (TVR, reach, frequency, reach 3+, spot, duplication, daypart, tier) using examples from the plan.
 - Sections with divider slides: the audience (hours, days, channels), our recommendation (approach, channel split with a reason per channel, tier pyramid, programme selection, anchor programmes), reach and schedule (overlap diagram, how many channels, weekly booking calendar), budget options and risks (risk / why it matters / what we will do), next steps (dated timeline, decisions needed).
 - Every content slide has an action title, a "What this means" box and "How to read this" captions under charts; every slide has speaker notes.
 - Optional appendix: method, assumptions, full programme list.
