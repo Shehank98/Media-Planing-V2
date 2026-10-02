@@ -412,7 +412,7 @@ function vPlan(el) {
         <div class="panel"><div class="ph"><h3>Plan health check</h3></div><div class="pb"><ul class="health" id="pl-health"></ul></div></div>
       </div>
       <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
-      <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">result of the spot-by-spot buy</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
+      <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">budget per channel, filled with spots</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
       <div class="panel"><div class="ph"><h3>Programme basket</h3><span class="s" id="bk-sum"></span></div><div class="pb" id="pl-basket"></div></div>
       <div class="panel"><div class="ph"><h3>Weekly flighting</h3><span class="s" id="fl-sub"></span><span class="push">${seg('fv', S, [['weeks', 'By week'], ['days', 'Day plan']])}<button class="btn sm" id="fl-csv">Export schedule</button></span></div><div class="pb" id="pl-flight"></div></div>
     </div>
@@ -450,14 +450,14 @@ function updatePlan() {
       <div class="tbars"><div class="tb"><i style="width:${Math.min(100, t.target)}%;background:color-mix(in srgb,${TIER_COL[t.t]} 30%,var(--panel))"></i><span>target ${nf(t.target, 0)}%</span></div><div class="tb"><i style="width:${Math.min(100, t.actual)}%;background:${TIER_COL[t.t]}"></i><span><b>actual ${nf(t.actual, 0)}%</b></span></div></div></div>`).join('')}</div>
     <div class="tw" style="margin-top:10px"><table><thead><tr><th>Daypart</th><th>Limit</th><th>Actual</th><th></th></tr></thead><tbody>${A.dps.filter(d => d.present).map(d => { const bad = d.actual > d.max + .5 || d.actual + .5 < d.min; return `<tr><td>${esc(d.d)}</td><td>${nf(d.min, 0)}–${nf(d.max, 0)}%</td><td><b>${nf(d.actual, 0)}%</b></td><td style="width:40%"><div class="mini-bar" style="justify-content:flex-start"><div class="tr" style="width:100%"><div class="fl" style="width:${Math.min(100, d.actual)}%;background:${bad ? 'var(--bad)' : 'var(--accent)'}"></div></div></div></td></tr>`; }).join('')}</tbody></table></div>`;
   // Split
-  $('#pl-split').innerHTML = `<div class="stack">${A.chs.map(c => `<div style="width:${(c.w * 100).toFixed(2)}%;background:${cv(c.ch)}" title="${esc(chName(c.ch))} ${nf(c.w * 100, 1)}%">${c.w > .08 ? esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0) + '%' : ''}</div>`).join('')}</div>
-   <div class="tw"><table><thead><tr><th>Channel</th><th>Share</th><th>Budget</th><th>Avg TVR</th><th>Avg reach</th><th>Programs</th><th>Spots</th><th>Reach</th><th class="l">Why this weight</th></tr></thead><tbody>${A.chs.map(c => {
-    const st = S.plan.cs.find(x => x.ch === c.ch), sel = S.plan.sel.find(x => x.ch === c.ch);
+  $('#pl-split').innerHTML = `<div class="stack">${A.chs.map(c => `<div style="width:${(c.allocW * 100).toFixed(2)}%;background:${cv(c.ch)}" title="${esc(chName(c.ch))} ${nf(c.allocW * 100, 1)}%">${c.allocW > .08 ? esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.allocW * 100, 0) + '%' : ''}</div>`).join('')}</div>
+   <div class="tw"><table><thead><tr><th>Channel</th><th>Share</th><th>Budget</th><th>Booked</th><th>Left</th><th>Programs</th><th>Spots</th><th>Reach</th><th class="l">Why this weight</th></tr></thead><tbody>${A.chs.map(c => {
+    const sel = S.plan.sel.find(x => x.ch === c.ch);
     const rev = c.progs.some(x => x.role === 'review') && c.progs.length === 1;
-    const t1 = c.progs.filter(x => x.tier === 1).length;
-    const why = sel && sel.manual ? 'Fixed share' : c === A.chs[0] ? 'Most new reach per rupee' : c.progs.length === 1 ? (rev ? 'Risk: all spend on one volatile program' : 'Single program: ' + pn(c.progs[0].p)) : t1 ? `${t1} Tier 1 program${t1 > 1 ? 's' : ''}, adds reach beyond ${chName(A.chs[0].ch)}` : 'Cheaper frequency and incremental reach';
-    return `<tr class="${rev ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.w * 100).toFixed(0)}">` : `<b>${nf(c.w * 100, 1)}%</b>`}</td><td>${lkr(c.bud).replace('LKR ', '')}</td><td>${nf(st.tvr, 2)}</td><td>${nf(st.reach, 2)}%</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
-  }).join('')}</tbody></table></div>${S.editSplit ? `<p class="hint">Type a share to fix a channel; the optimiser fills the rest. <button class="link" id="pl-split-reset">Clear fixed shares</button></p>` : ''}`;
+    const why = sel && sel.manual ? 'Fixed share (yours)' : `Channel score ${nf((sel?.score || 0) * 100, 1)}: 0.6 reach share + 0.4 TVR share`;
+    const left = A.fixed ? '' : c.gapWhy === 'cap' ? 'every programme is full' : c.gapWhy === 'daypart' ? 'daypart limit reached' : c.gapWhy === 'budget' ? 'total budget used' : c.gapWhy === 'spot' ? 'less than one spot' : '';
+    return `<tr class="${rev || c.gapWhy === 'cap' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.allocW * 100).toFixed(0)}">` : `<b>${nf(c.allocW * 100, 1)}%</b>`}</td><td>${lkr(c.alloc).replace('LKR ', '')}</td><td><b>${lkr(c.bud).replace('LKR ', '')}</b></td><td>${lkr(c.gap).replace('LKR ', '')}${left ? `<span class="sub">${left}</span>` : ''}</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
+  }).join('')}</tbody></table></div><p class="hint">Each channel gets its share of the budget, and spots are added until the next spot would no longer fit. Programmes already in the basket get more spots first; if money is still left, the channel's next best programmes are added (marked Top-up in the basket).${S.editSplit ? ' Type a share to fix a channel; the other channels share the rest by score. <button class="link" id="pl-split-reset">Clear fixed shares</button>' : ''}</p>`;
   // Basket
   renderBasket();
   renderFlight();
@@ -485,7 +485,7 @@ function renderBasket() {
   const chip = (v, l, n) => `<button class="chip ${B.tier === String(v) ? 'on' : ''}" data-bkt="${v}">${l} <b>${n}</b></button>`;
   const row = x => {
     const sd = steadiness(x.ci, x.n);
-    const tags = (x.role === 'anchor' ? '<span class="tag anchor">Anchor</span>' : '') + (x.role === 'review' ? `<span class="tag review" title="Ratings swing week to week (steadiness ${nf(x.ci, 1)})">Volatile</span>` : '') + (x.locked ? '<span class="tag">Locked</span>' : '') + (x.atCap ? `<span class="tag" title="At the ${S.P.capWk}/week spot cap">At cap</span>` : '');
+    const tags = (x.role === 'anchor' ? '<span class="tag anchor">Anchor</span>' : '') + (x.role === 'review' ? `<span class="tag review" title="Ratings swing week to week (steadiness ${nf(x.ci, 1)})">Volatile</span>` : '') + (x.locked ? '<span class="tag">Locked</span>' : '') + (x.topup ? '<span class="tag" title="Added to use the rest of this channel\'s budget">Top-up</span>' : '') + (x.atCap ? `<span class="tag" title="At the ${S.P.capWk}/week spot cap">At cap</span>` : '');
     return `<div class="bk-row">
       <div class="bk-name"><button class="nm" ${xa({ ch: x.ch, p: x.p })} title="${esc(pn(x.p))}: open detail">${esc(pn(x.p))}</button>${tags}
         <span class="sub">${B.view === 'list' ? dot(x.ch) + esc(chName(x.ch)) + ' · ' : ''}${hl(x.hour)} · ${esc(pn(x.cat))} · ${sd.label.toLowerCase()}</span></div>

@@ -39,7 +39,7 @@ Every chart bar, heatmap cell, table row and insight card opens a **detail drawe
 `Channel, Date, Start, Program, TVR`. Optional: `Day, End, Duration, Category, TVR Share %, Reach %`. Times like `20:09`, `8:09 PM` and Excel time cells are all handled.
 
 ### Models used
-- **Channels** are short-listed on 0.6 × avg Reach % + 0.4 × avg TVR (or picked manually).
+- **Channels** are short-listed on 0.6 × avg Reach % + 0.4 × avg TVR (or picked manually). The same score sets each channel's budget share (or type your own fixed shares). Spots are bought within each channel's budget, then topped up until the next spot no longer fits: first more spots on programmes already in the basket, then the channel's next best programmes one at a time (tagged Top-up).
 - **Tiers:** eligible programs (avg TVR at or above "Ignore programs below TVR", default 0.5) are ranked by average TVR. Tier 1 = at or above the 75th percentile, Tier 3 = below the 25th, Tier 2 in between (both editable). Presets: Reach 65/35/0, Balanced 45/35/20, Frequency 30/40/30.
 - **Optimiser:** buys one spot at a time where it adds the most new net reach per rupee (weighted by steadiness = mean ÷ std. dev.). Order: locked programs, fixed channel shares and daypart minimums, each tier up to its budget, then leftover. Caps: spots per program per week, programs per channel per tier, daypart maximums.
 - **Cost per spot** = max(minimum spot rate, CPRP × TVR × length/30).

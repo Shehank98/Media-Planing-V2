@@ -283,17 +283,26 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const maxSum = [...present].reduce((a, d) => a + dpMax[d], 0);
   if (maxSum < 1 && maxSum > 0) { relaxed = true; present.forEach(d => dpMax[d] = dpMax[d] / maxSum); }
   const ov = P.split || {}, chFix = {};
-  plan.sel.forEach(c => { if (c.manual) chFix[c.ch] = Math.max(0, Math.min(100, +ov[c.ch])) / 100; });
+  plan.sel.forEach(c => { if (c.manual && byCh.has(c.ch)) chFix[c.ch] = Math.max(0, Math.min(100, +ov[c.ch])) / 100; });
+  // Channel budgets: fixed shares first, the rest split by channel score (0.6 reach share + 0.4 TVR share).
+  // Each channel's spend stays within its budget; channels without candidates get nothing.
+  const fixRaw = Object.values(chFix).reduce((a, b) => a + b, 0), fixSum = Math.min(1, fixRaw);
+  const autoCh = plan.sel.filter(c => byCh.has(c.ch) && chFix[c.ch] == null), scSum = autoCh.reduce((a, c) => a + (c.score || 0), 0);
+  const chAlloc = {};
+  Object.keys(chFix).forEach(ch => chAlloc[ch] = fixRaw > 1 ? chFix[ch] / fixRaw : chFix[ch]); // shares over 100% are scaled down
+  autoCh.forEach(c => chAlloc[c.ch] = (1 - fixSum) * (scSum > 0 ? (c.score || 0) / scSum : 1 / autoCh.length));
+  byCh.forEach((_, ch) => { if (chAlloc[ch] == null) chAlloc[ch] = 0; });
 
   let curNet = 0, spent = 0;
   const tierSp = [0, 0, 0, 0], dpSp = {}, chSp = {}, chN = {};
   DPS.forEach(d => dpSp[d] = 0); byCh.forEach((_, c) => { chSp[c] = 0; });
   const E = 1e-6;
-  const ok = x => spent + x.cost <= B + E && x.cnt < x.capTot && (x.cnt > 0 || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
-    dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && (chFix[x.ch] == null || chSp[x.ch] + x.cost <= chFix[x.ch] * B + E);
+  let openBasket = false; // top-up may add programmes beyond the per-tier limit to reach a channel's budget
+  const ok = x => spent + x.cost <= B + E && x.cnt < x.capTot && (x.cnt > 0 || openBasket || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
+    dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && chSp[x.ch] + x.cost <= chAlloc[x.ch] * B + E;
   const gain = x => { const R = chR(x.ch, x, x.cnt + 1); return (alpha * (net(x.ch, R) - curNet) + (1 - alpha) * x.mean) * x.sf / x.cost; };
   let phase = '';
-  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
+  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) { chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; if (openBasket) x.topup = true; } x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
   const fill = (pool, extra) => {
     for (;;) {
       let best = null, bg = -Infinity;
@@ -311,6 +320,19 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
   [1, 2, 3].forEach(t => (phase = 'tier' + t) && fill(items.filter(x => x.tier === t), x => tierSp[t] + x.cost <= tiers[t - 1] / 100 * B + E));
   phase = 'leftover'; fill(items);
+  // Top-up: bring each channel close to its budget. First more spots on programmes already
+  // in the basket, then (if money is still left) the channel's next best programmes.
+  // A new programme is added one at a time and filled before the next one, so the basket stays short.
+  phase = 'topup';
+  for (;;) {
+    fill(items, x => x.cnt > 0 || x.locked);
+    openBasket = true;
+    let best = null, bg = -Infinity;
+    for (const x of items) { if (x.cnt || !ok(x)) continue; const g = gain(x); if (g > bg) { bg = g; best = x; } }
+    if (best) take(best, bg);
+    openBasket = false;
+    if (!best) break;
+  }
   }
 
   const tot = spent || 1;
@@ -318,7 +340,17 @@ export function scen(plan, f, P, getD, dIntra, trace) {
     .sort((a, b) => b.bud - a.bud);
   const m = new Map();
   kept.forEach(x => { let c = m.get(x.ch); if (!c) { c = { ch: x.ch, w: 0, bud: 0, progs: [], spots: 0, views: 0, R: chRv.get(x.ch) }; m.set(x.ch, c); } c.w += x.k; c.bud += x.bud; c.spots += x.spots; c.views += x.views; c.progs.push(x); });
-  const chs = [...m.values()].sort((a, b) => b.w - a.w);
+  // Every planned channel is reported with its budget, even if nothing could be booked on it.
+  byCh.forEach((_, ch) => { if (!m.has(ch) && chAlloc[ch] > 0) m.set(ch, { ch, w: 0, bud: 0, progs: [], spots: 0, views: 0, R: 0 }); });
+  m.forEach(c => {
+    c.allocW = chAlloc[c.ch] || 0; c.alloc = c.allocW * B; c.gap = Math.max(0, c.alloc - c.bud);
+    const its = byCh.get(c.ch) || [], fits = its.filter(x => x.cnt < x.capTot);
+    const cheapest = fits.length ? Math.min(...fits.map(x => x.cost)) : Infinity;
+    // Why money is left: smaller than one more spot, or every programme is full.
+    c.gapWhy = c.gap < 1 ? '' : !fits.length ? 'cap' : cheapest > c.gap + E ? 'spot' : spent + cheapest > B + E ? 'budget' : 'daypart';
+    c.cheapest = cheapest;
+  });
+  const chs = [...m.values()].sort((a, b) => b.alloc - a.alloc || b.w - a.w);
   const gross = chs.reduce((a, c) => a + c.R, 0), views = kept.reduce((a, x) => a + x.views, 0);
   return {
     B, f, spent, unspent: Math.max(0, B - spent), over: Math.max(0, spent - B), fixed: !!frozen, kept, dropped: [], chs, gross, net: curNet,
@@ -422,7 +454,7 @@ export function healthChecks(rows, plan, A, P, getD) {
   const anchors = it.filter(x => x.role === 'anchor');
   L.push({ t: anchors.length ? 'ok' : 'wa', m: anchors.length ? `${anchors.length} anchor program${anchors.length > 1 ? 's' : ''} carry the plan (Tier 1 and steady)` : 'No anchor programs: nothing in the basket is both Tier 1 and steady' });
   if (A.fixed) L.push({ t: A.over > 0 ? 'wa' : 'in', m: A.over > 0 ? `Schedule kept as planned after rate edits: it is <b>${lkr(A.over)} over budget</b>. Re-optimise to fit the budget with the new rates.` : `Schedule kept as planned after rate edits (${lkr(A.unspent)} under budget). Re-optimise to use the new rates.` });
-  if (!A.fixed && A.unspent > A.B * .02) L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent because caps are reached. Raise the spots-per-week cap, allow more programs per channel or widen daypart limits.` });
+  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every programme there is at its spot cap or daypart limit. Raise the spots-per-week or spots-per-day cap, lower the minimum TVR, widen daypart limits, or lower that channel's share.` }); }
   A.tiers.forEach(t => { if (t.target > 0 && Math.abs(t.actual - t.target) > 10) L.push({ t: 'in', m: `Tier ${t.t} gets ${nf(t.actual, 0)}% against a ${nf(t.target, 0)}% target${t.avail ? '' : ' (no Tier ' + t.t + ' programs in this brief)'}; leftover budget rolled to other tiers.` }); });
   A.dps.forEach(d => { if (d.present && d.min > 0 && d.actual + .5 < d.min) L.push({ t: 'wa', m: `${d.d} gets ${nf(d.actual, 0)}%, below its ${nf(d.min, 0)}% minimum. Not enough spots available there under the caps.` }); });
   if (A.relaxed) L.push({ t: 'in', m: 'Daypart maximums were scaled up because the brief only covers some dayparts.' });
