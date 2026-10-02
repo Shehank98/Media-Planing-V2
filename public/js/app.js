@@ -16,7 +16,7 @@ const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).
 const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); };
 const DEFAULT_P = {
   sr: 85,
-  budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [],
+  budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [], add: [],
   strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
   weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'bestday', dupThr: .5, pv: 2, repQ: 40,
   creatives: [{ name: 'Creative A', dur: 30, share: 100 }], rates: {}, disc: {}, sscl: 2.5, vat: 18
@@ -39,6 +39,7 @@ const getD = (a, b) => mkGetD(S.DUP)(a, b);
 // Older saved plans: derive the campaign end date and creatives.
 if (!S.P.end) S.P.end = campaignDays(S.P).end;
 if (!Array.isArray(S.P.creatives) || !S.P.creatives.length) S.P.creatives = [{ name: 'Creative A', dur: S.P.spotLen || 30, share: 100 }];
+S.P.add = Array.isArray(S.P.add) ? [...S.P.add] : []; S.P.lock = [...(S.P.lock || [])]; S.P.excl = [...(S.P.excl || [])];
 ['rates', 'disc'].forEach(k => { if (!S.P[k] || typeof S.P[k] !== 'object') S.P[k] = {}; });
 // Older saved plans used roadblock by default: move them to best-day placement once.
 if (!S.P.pv) { if (S.P.same === 'roadblock') S.P.same = 'bestday'; S.P.pv = 2; }
@@ -82,7 +83,7 @@ function setData(rows, meta, persist = true) {
   // Drop plan references to channels or programs not in this dataset.
   S.P.chPick = S.P.chPick.filter(c => S.CH.includes(c));
   const keys = new Set(rows.map(r => r.ch + '||' + r.p));
-  S.P.lock = S.P.lock.filter(k => keys.has(k)); S.P.excl = S.P.excl.filter(k => keys.has(k));
+  S.P.lock = S.P.lock.filter(k => keys.has(k)); S.P.excl = S.P.excl.filter(k => keys.has(k)); S.P.add = (S.P.add || []).filter(k => keys.has(k));
   Object.keys(S.P.split).forEach(c => { if (!S.CH.includes(c)) delete S.P.split[c]; });
   S.SF.ch = null; S.DR.open.clear(); S.chat = [];
   resetFilters(false);
@@ -351,7 +352,7 @@ const TIER_COL = { 1: 'var(--c1)', 2: 'var(--c2)', 3: 'var(--c3)' };
 const tierTag = t => `<span class="tag tier t${t}">T${t}</span>`;
 function vPlan(el) {
   killCharts('c-');
-  const P = S.P, f = S.FS;
+  const P = S.PD || S.P, f = S.FS; // settings show the draft while it has unapplied changes
   const chOn = S.CH.filter(c => f.ch.has(c));
   const num = (k, o = {}) => `<input type="number" data-p="${k}" value="${P[k]}" ${o.min != null ? `min="${o.min}"` : ''} ${o.max != null ? `max="${o.max}"` : ''} step="${o.step || 1}">`;
   const strat = STRATS[P.strategy] ? P.strategy : '';
@@ -382,9 +383,9 @@ function vPlan(el) {
           <label class="fld"><span>Target net reach <b id="l-tgt">${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="90" step="1" value="${P.target}"></label>
         </details>
         <details open><summary>Creatives</summary>
-          <div class="crs">${P.creatives.map((c, i) => `<div class="cr-row"><input type="text" data-cr="${i}" data-f="name" value="${esc(c.name)}" placeholder="Brand / creative" aria-label="Creative name"><select data-cr="${i}" data-f="dur" aria-label="Duration">${[5, 10, 15, 20, 25, 30, 45, 60].map(d => `<option value="${d}" ${+c.dur === d ? 'selected' : ''}>${d}s</option>`).join('')}</select><input type="number" min="0" max="100" data-cr="${i}" data-f="share" value="${c.share}" aria-label="Rotation share %"><span class="muted">%</span>${P.creatives.length > 1 ? `<button class="ico x" data-cr-del="${i}" title="Remove creative" aria-label="Remove creative">${ICO_X}</button>` : '<span></span>'}</div>`).join('')}</div>
-          <div class="inl" style="justify-content:space-between;margin-top:6px"><button class="btn sm" data-cr-add>+ Add creative</button><span class="muted" id="l-crsum">Shares ${P.creatives.reduce((a, c) => a + (+c.share || 0), 0)}% · avg ${nf(avgLen(P), 1)} sec</span></div>
-          <p class="hint">Cost of a spot = 30-sec rate × duration ÷ 30. Spots are rotated between creatives by share.</p>
+          <div class="crs">${P.creatives.map((c, i) => `<div class="cr-row"><input type="text" data-cr="${i}" data-f="name" value="${esc(c.name)}" placeholder="Brand / creative" aria-label="Creative name"><select data-cr="${i}" data-f="dur" aria-label="Duration">${[5, 10, 15, 20, 25, 30, 45, 60].map(d => `<option value="${d}" ${+c.dur === d ? 'selected' : ''}>${d}s</option>`).join('')}</select><input type="number" min="0" max="100" data-cr="${i}" data-f="share" value="${c.share}" aria-label="Budget share %" title="Share of the budget for this creative"><span class="muted">%</span>${P.creatives.length > 1 ? `<button class="ico x" data-cr-del="${i}" title="Remove creative" aria-label="Remove creative">${ICO_X}</button>` : '<span></span>'}</div>`).join('')}</div>
+          <div class="inl" style="justify-content:space-between;margin-top:6px"><button class="btn sm" data-cr-add>+ Add creative</button><span class="muted" id="l-crsum">Budget ${P.creatives.reduce((a, c) => a + (+c.share || 0), 0)}% · avg ${nf(avgLen(P), 1)} sec a spot</span></div>
+          <p class="hint">% = share of the <b>budget</b> for each creative. Cost of a spot = 30-sec rate × duration ÷ 30, so a longer creative gets fewer spots for the same money.</p>
         </details>
         <details open><summary>Strategy and tiers</summary>
           <div class="fld">${seg('strategy', { strategy: strat }, Object.entries(STRATS).map(([k, v]) => [k, v.label]))}${strat ? '' : ' <span class="tag">Custom</span>'}</div>
@@ -398,7 +399,8 @@ function vPlan(el) {
           <div class="fld">${seg('chMode', P, [['auto', 'Auto (best N)'], ['manual', 'Pick channels']])}</div>
           ${P.chMode === 'auto' ? `<label class="fld"><span>Channels in plan <b id="l-nch">${P.nCh}</b></span><input type="range" id="p-nch" min="1" max="${Math.max(1, chOn.length)}" value="${Math.min(P.nCh, Math.max(1, chOn.length))}"></label>`
       : `<div class="fld"><div class="chips">${chOn.map(c => `<button class="chip ${P.chPick.includes(c) ? 'on' : ''}" data-pick-ch="${esc(c)}">${esc(chName(c))}</button>`).join('')}</div></div>`}
-          <label class="fld"><span>Programs per channel per tier <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="5" value="${P.nProg}"></label>
+          <label class="fld"><span>Best programmes per channel per tier <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="5" value="${P.nProg}"></label>
+          <p class="hint">The basket takes the best ${P.nProg} of each tier on every channel (average TVR adjusted for steadiness). Add more programmes from the basket itself.</p>
         </details>
         <details><summary>Caps and dayparts</summary>
           <label class="fld"><span>Max spots per program per week <b id="l-cap">${P.capWk}</b></span><input type="range" id="p-cap" min="1" max="10" value="${P.capWk}"></label>
@@ -414,7 +416,8 @@ function vPlan(el) {
           ${P.same === 'bestday' ? `<label class="fld"><span>Keep apart when overlap is at least</span><input type="number" data-p="dupThr" min="0" max="1" step="0.05" value="${P.dupThr ?? .5}"></label>` : ''}
           <p class="hint">${P.same === 'bestday' ? 'Best day: each spot goes on the programme\'s highest-rated air day. If a same-hour programme with high audience overlap (Duplication tab factors) is already on that day, the next best day is used, so shared viewers are not hit twice on one day.' : P.same === 'roadblock' ? 'Roadblock: rival channels at the same hour on the same night. One viewer cannot watch both, so this reaches more different people.' : 'Stagger: rival same-hour spots on different nights. The same viewers see the ad more often (frequency).'}</p>
         </details>
-      </div></div>
+      </div>
+      <div class="applybar ${S.PD ? 'on' : ''}" id="pl-apply"><span id="pl-apply-t">${S.PD ? '<b>Changes not applied yet</b>' : 'Plan is up to date'}</span><button class="btn sm" id="pl-discard" ${S.PD ? '' : 'disabled'}>Discard</button><button class="btn pri sm" id="pl-applyb" ${S.PD ? '' : 'disabled'}>Apply</button></div></div>
     </div>
     <div class="col">
       <div class="grid g2">
@@ -467,7 +470,7 @@ function updatePlan() {
     const sel = S.plan.sel.find(x => x.ch === c.ch);
     const rev = c.progs.some(x => x.role === 'review') && c.progs.length === 1;
     const why = sel && sel.manual ? 'Fixed share (yours)' : `Channel score ${nf((sel?.score || 0) * 100, 1)}: 0.6 reach share + 0.4 TVR share`;
-    const left = A.fixed ? '' : c.gapWhy === 'cap' ? 'every programme is full' : c.gapWhy === 'daypart' ? 'daypart limit reached' : c.gapWhy === 'budget' ? 'total budget used' : c.gapWhy === 'spot' ? 'less than one spot' : '';
+    const left = A.fixed ? '' : c.gapWhy === 'cap' ? 'basket is full: add a programme' : c.gapWhy === 'daypart' ? 'daypart limit reached' : c.gapWhy === 'budget' ? 'total budget used' : c.gapWhy === 'spot' ? 'less than one spot' : '';
     return `<tr class="${rev || c.gapWhy === 'cap' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.allocW * 100).toFixed(0)}">` : `<b>${nf(c.allocW * 100, 1)}%</b>`}</td><td>${lkr(c.alloc).replace('LKR ', '')}</td><td><b>${lkr(c.bud).replace('LKR ', '')}</b></td><td>${lkr(c.gap).replace('LKR ', '')}${left ? `<span class="sub">${left}</span>` : ''}</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
   }).join('')}</tbody></table></div><p class="hint">Each channel gets its share of the budget, and spots are added until the next spot would no longer fit. Programmes already in the basket get more spots first; if money is still left, the channel's next best programmes are added (marked Top-up in the basket).${S.editSplit ? ' Type a share to fix a channel; the other channels share the rest by score. <button class="link" id="pl-split-reset">Clear fixed shares</button>' : ''}</p>`;
   // Basket
@@ -530,7 +533,7 @@ const ICO_X = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" strok
 function renderBasket() {
   const el = $('#pl-basket'), A = S.cur, B = S.BK;
   if (!el || !A) return;
-  const all = A.kept, mxk = Math.max(...all.map(x => x.k), .01);
+  const all = [...A.kept, ...(A.miss || [])], mxk = Math.max(...all.map(x => x.k), .01);
   const watch = all.filter(x => x.role === 'review');
   const pass = x => B.tier === 'all' || (B.tier === 'watch' ? x.role === 'review' : x.tier === +B.tier);
   const items = all.filter(pass);
@@ -538,7 +541,7 @@ function renderBasket() {
   const chip = (v, l, n) => `<button class="chip ${B.tier === String(v) ? 'on' : ''}" data-bkt="${v}">${l} <b>${n}</b></button>`;
   const row = x => {
     const sd = steadiness(x.ci, x.n);
-    const tags = (x.role === 'anchor' ? '<span class="tag anchor">Anchor</span>' : '') + (x.role === 'review' ? `<span class="tag review" title="Ratings swing week to week (steadiness ${nf(x.ci, 1)})">Volatile</span>` : '') + (x.locked ? '<span class="tag">Locked</span>' : '') + (x.topup ? '<span class="tag" title="Added to use the rest of this channel\'s budget">Top-up</span>' : '') + (x.atCap ? `<span class="tag" title="At the ${S.P.capWk}/week spot cap">At cap</span>` : '');
+    const tags = (x.role === 'anchor' ? '<span class="tag anchor">Anchor</span>' : '') + (x.role === 'review' ? `<span class="tag review" title="Ratings swing week to week (steadiness ${nf(x.ci, 1)})">Volatile</span>` : '') + (x.locked ? '<span class="tag">Locked</span>' : '') + (x.added ? '<span class="tag" title="You added this programme to the basket">Added</span>' : '') + (!x.spots ? '<span class="tag wa" title="No money left on this channel for a first spot">No spots</span>' : '') + (x.atCap ? `<span class="tag" title="At the ${S.P.capWk}/week spot cap">At cap</span>` : '');
     return `<div class="bk-row">
       <div class="bk-name"><button class="nm" ${xa({ ch: x.ch, p: x.p })} title="${esc(pn(x.p))}: open detail">${esc(pn(x.p))}</button>${tags}
         <span class="sub">${B.view === 'list' ? dot(x.ch) + esc(chName(x.ch)) + ' · ' : ''}${hl(x.hour)} · ${esc(pn(x.cat))} · ${sd.label.toLowerCase()}</span></div>
@@ -547,7 +550,7 @@ function renderBasket() {
       <div class="r"><b>${nf(x.rp, 0)}%</b><span class="sub">reach</span></div>
       <div class="r"><b>${x.spots}</b><span class="sub">spots</span></div>
       <div class="bk-share"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><span><b>${nf(x.k * 100, 1)}%</b> · ${lkr(x.bud).replace('LKR ', '')}</span></div>
-      <div class="bk-act"><button class="ico ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Lock: always buy this programme'}" aria-label="${x.locked ? 'Unlock' : 'Lock'} ${esc(pn(x.p))}">${ICO_LOCK}</button><button class="ico x" data-excl="${esc(x.key)}" title="Remove from plan" aria-label="Remove ${esc(pn(x.p))}">${ICO_X}</button></div>
+      <div class="bk-act"><button class="ico ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Lock: always buy this programme'}" aria-label="${x.locked ? 'Unlock' : 'Lock'} ${esc(pn(x.p))}">${ICO_LOCK}</button>${x.added ? `<button class="ico x" data-bk-rm="${esc(x.key)}" title="Take out of the basket" aria-label="Take ${esc(pn(x.p))} out of the basket">${ICO_X}</button>` : `<button class="ico x" data-excl="${esc(x.key)}" title="Remove from plan (the next best programme takes its place)" aria-label="Remove ${esc(pn(x.p))}">${ICO_X}</button>`}</div>
     </div>`;
   };
   let body = '';
@@ -557,14 +560,16 @@ function renderBasket() {
     body = items.slice(0, lim).map(row).join('') + (items.length > lim ? `<button class="bk-more" data-bkall>Show all ${items.length} programmes</button>` : items.length > 10 ? '<button class="bk-more" data-bkall>Show top 10 only</button>' : '');
   } else {
     body = A.chs.map(c => {
-      const its = items.filter(x => x.ch === c.ch); if (!its.length) return '';
+      const its = items.filter(x => x.ch === c.ch).sort((a, b) => a.tier - b.tier || b.bud - a.bud); if (!its.length) return '';
       const open = B.open.has(c.ch), lim = open ? its.length : Math.min(2, its.length);
-      return `<div class="bk-grp"><div class="bk-gh">${dot(c.ch)}<b>${esc(chName(c.ch))}</b><span class="muted">${nf(c.w * 100, 0)}% of spend · ${lkr(c.bud).replace('LKR ', '')} · ${c.spots} spots · ${c.progs.length} programme${c.progs.length > 1 ? 's' : ''}</span></div>
+      const inB = new Set(A.basketKeys || []), avail = S.plan.items.filter(x => x.ch === c.ch && !inB.has(x.key)).sort((a, b) => b.mean - a.mean);
+      const picker = avail.length ? `<select class="bk-add" data-bk-add="${esc(c.ch)}" aria-label="Add a programme to ${esc(chName(c.ch))}"><option value="">+ Add programme to ${esc(chName(c.ch))}…</option>${avail.map(x => `<option value="${esc(x.key)}">Tier ${x.tier} · ${esc(pn(x.p))} · TVR ${nf(x.mean, 2)} · ${hl(x.hour)}</option>`).join('')}</select>` : '';
+      return `<div class="bk-grp"><div class="bk-gh">${dot(c.ch)}<b>${esc(chName(c.ch))}</b><span class="muted">${nf(c.w * 100, 0)}% of spend · ${lkr(c.bud).replace('LKR ', '')} · ${c.spots} spots · ${its.length} programme${its.length > 1 ? 's' : ''}</span></div>
         ${its.slice(0, lim).map(row).join('')}
-        ${its.length > 2 ? `<button class="bk-more" data-bkopen="${esc(c.ch)}">${open ? 'Show less' : `+ ${its.length - lim} more on ${esc(chName(c.ch))}`}</button>` : ''}</div>`;
+        <div class="bk-foot">${its.length > 2 ? `<button class="bk-more" data-bkopen="${esc(c.ch)}">${open ? 'Show less' : `+ ${its.length - lim} more on ${esc(chName(c.ch))}`}</button>` : '<span></span>'}${picker}</div></div>`;
     }).join('');
   }
-  if ($('#bk-sum')) $('#bk-sum').textContent = `${all.length} programmes · ${ni(A.spots)} spots · click a name for detail`;
+  if ($('#bk-sum')) $('#bk-sum').textContent = `best ${A.nB} per tier on each channel · ${all.length} programmes · ${ni(A.spots)} spots`;
   const dropped = A.dropped || [], ex = S.P.excl;
   el.innerHTML = `
     <div class="bk-top">
@@ -733,7 +738,7 @@ function saveScenario(name, A, P = S.P, FS = S.FS) {
   lsSet('scenarios', S.scenarios); toast('Scenario saved');
 }
 function loadScenario(sc) {
-  S.P = Object.assign({}, DEFAULT_P, JSON.parse(JSON.stringify(sc.P))); savePlan();
+  S.P = Object.assign({}, DEFAULT_P, JSON.parse(JSON.stringify(sc.P))); S.PD = null; savePlan();
   const f = sc.FS;
   S.FS = { from: f.from, to: f.to, ch: new Set(f.ch.filter(c => S.CH.includes(c))), cat: new Set(f.cat.filter(c => S.CATS.includes(c))), day: new Set(f.day), h0: f.h0, h1: f.h1, minTvr: f.minTvr, q: f.q || '', p: f.p || '' };
   if (!S.FS.ch.size) S.FS.ch = new Set(S.CH); if (!S.FS.cat.size) S.FS.cat = new Set(S.CATS);
@@ -1209,7 +1214,7 @@ function actionParts(a) {
 }
 function applyAction(a) {
   const { p, fs } = actionParts(a);
-  Object.assign(S.P, p); Object.assign(S.FS, fs); savePlan();
+  S.PD = null; Object.assign(S.P, p); Object.assign(S.FS, fs); savePlan();
   applyFilters(); closePanes(); setTab('plan'); toast('Applied to plan');
 }
 function saveActionScenario(a, label) {
@@ -1238,7 +1243,21 @@ async function runDeck() {
   finally { go.disabled = false; go.textContent = 'Create deck'; }
 }
 
-const PLAN_EDIT = '#v-plan .settings, #v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], #v-plan [data-split], #pl-split-reset, [data-cr-add], [data-cr-del], [data-act]';
+// Plan settings are edited on a draft copy and only used once the planner clicks Apply.
+const inSettings = t => !!(t && t.closest && t.closest('#v-plan .settings'));
+function draft() { if (!S.PD) S.PD = JSON.parse(JSON.stringify(S.P)); return S.PD; }
+function applyBar() {
+  const b = $('#pl-apply'); if (!b) return; const on = !!S.PD;
+  b.classList.toggle('on', on); $('#pl-apply-t').innerHTML = on ? '<b>Changes not applied yet</b>' : 'Plan is up to date';
+  $('#pl-discard').disabled = !on; $('#pl-applyb').disabled = !on;
+}
+function applyDraft() {
+  if (!S.PD) return;
+  S.P = S.PD; S.PD = null; S.P.frozen = null; S.P.spotLen = Math.round(avgLen(S.P));
+  if (S.P.end && S.P.end < S.P.start) S.P.end = S.P.start;
+  savePlan(); recalc(); vPlan($('#v-plan')); toast('Plan settings applied');
+}
+const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], #v-plan [data-split], #pl-split-reset, [data-act]';
 function unfreezeIf(t) { if (S.P.frozen && t && t.closest && t.closest(PLAN_EDIT)) { S.P.frozen = null; savePlan(); document.querySelectorAll('#v-plan .frozen').forEach(e => e.remove()); } }
 ['click', 'change', 'input'].forEach(ev => document.addEventListener(ev, e => unfreezeIf(e.target), true));
 
@@ -1265,8 +1284,10 @@ document.addEventListener('click', e => {
   const t = e.target;
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
-  if (t.closest('[data-cr-add]')) { S.P.creatives.push({ name: 'Creative ' + String.fromCharCode(65 + S.P.creatives.length), dur: 10, share: 0 }); savePlan(); vPlan($('#v-plan')); return; }
-  if ((el = t.closest('[data-cr-del]'))) { S.P.creatives.splice(+el.dataset.crDel, 1); S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return; }
+  if (t.closest('#pl-applyb')) { applyDraft(); return; }
+  if (t.closest('#pl-discard')) { S.PD = null; vPlan($('#v-plan')); toast('Changes discarded'); return; }
+  if (t.closest('[data-cr-add]')) { const D = draft(); D.creatives.push({ name: 'Creative ' + String.fromCharCode(65 + D.creatives.length), dur: 10, share: 0 }); vPlan($('#v-plan')); return; }
+  if ((el = t.closest('[data-cr-del]'))) { draft().creatives.splice(+el.dataset.crDel, 1); vPlan($('#v-plan')); return; }
   if ((el = t.closest('[data-sch-ch]'))) { S.SCH.ch = el.dataset.schCh; vSchedule($('#v-schedule')); return; }
   if (t.closest('#sch-xlsx')) { runXlsx(t.closest('#sch-xlsx')); return; }
   if (t.closest('[data-reopt]')) { S.P.frozen = null; savePlan(); recalc(); refreshPlanViews(); toast('Re-optimised with the new rates'); return; }
@@ -1279,7 +1300,7 @@ document.addEventListener('click', e => {
   if ((el = t.closest('[data-demo]'))) { loadDemo(); return; }
   if (t.closest('#clearData')) {
     if (!confirm('Remove the loaded data, scenarios and plan settings from this browser?')) return;
-    idbDel('dataset'); S.scenarios = []; lsSet('scenarios', []); S.P = Object.assign({}, DEFAULT_P); savePlan();
+    idbDel('dataset'); S.scenarios = []; lsSet('scenarios', []); S.P = Object.assign({}, DEFAULT_P); S.PD = null; savePlan();
     S.ROWS = []; S.F = []; S.meta = null; S.chat = []; closePanes(); chrome(); renderActive(); toast('Data removed from this browser'); return;
   }
   if ((el = t.closest('[data-open]'))) { openDrawer(el.dataset.open); return; }
@@ -1301,6 +1322,7 @@ document.addEventListener('click', e => {
     savePlan(); recalc(); if (S.TAB === 'plan') updatePlan(); if ($('#detail').classList.contains('on')) renderDetail();
     toast(X.includes(k) ? 'Removed from plan' : 'Restored to plan'); return;
   }
+  if ((el = t.closest('[data-bk-rm]'))) { S.P.add = (S.P.add || []).filter(k => k !== el.dataset.bkRm); savePlan(); recalc(); updatePlan(); toast('Taken out of the basket'); return; }
   if ((el = t.closest('[data-unexcl]'))) { S.P.excl = S.P.excl.filter(x => x !== el.dataset.unexcl); savePlan(); recalc(); updatePlan(); return; }
   if ((el = t.closest('[data-x]'))) {
     const f = JSON.parse(el.dataset.x);
@@ -1313,26 +1335,26 @@ document.addEventListener('click', e => {
   if ((el = t.closest('[data-seg] button'))) {
     const k = el.parentElement.dataset.seg;
     if (['strategy', 'pacing', 'same'].includes(k)) {
-      S.P[k] = el.dataset.v; if (k === 'strategy') S.P.tiers = [...STRATS[el.dataset.v].t];
-      savePlan(); recalc(); vPlan($('#v-plan')); return;
+      const D = draft(); D[k] = el.dataset.v; if (k === 'strategy') D.tiers = [...STRATS[el.dataset.v].t];
+      vPlan($('#v-plan')); return;
     }
     if (k === 'sdDays' || k === 'sdScope') { S.SD[k] = el.dataset.v; killCharts('c-'); vDup($('#v-dup')); return; }
     if (k === 'view') { S.BK.view = el.dataset.v; S.BK.all = false; renderBasket(); return; }
     if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
-    if (k === 'chMode') { S.P.chMode = el.dataset.v; S.P.split = {}; if (S.P.chMode === 'manual' && !S.P.chPick.length && S.cur) S.P.chPick = S.cur.chs.map(c => c.ch); savePlan(); recalc(); vPlan($('#v-plan')); return; }
+    if (k === 'chMode') { const D = draft(); D.chMode = el.dataset.v; D.split = {}; if (D.chMode === 'manual' && !D.chPick.length && S.cur) D.chPick = S.cur.chs.map(c => c.ch); vPlan($('#v-plan')); return; }
     S.EX[k] = el.dataset.v; killCharts('c-'); vExplore($('#v-explore')); return;
   }
   if ((el = t.closest('[data-sfch]'))) { const c = el.dataset.sfch; S.SF.ch.has(c) ? S.SF.ch.delete(c) : S.SF.ch.add(c); killCharts('c-'); vExplore($('#v-explore')); return; }
   if ((el = t.closest('[data-pick-ch]'))) {
-    const c = el.dataset.pickCh, a = S.P.chPick; a.includes(c) ? a.splice(a.indexOf(c), 1) : a.push(c); delete S.P.split[c];
-    savePlan(); recalc(); el.classList.toggle('on'); updatePlan(); return;
+    const D = draft(), c = el.dataset.pickCh, a = D.chPick; a.includes(c) ? a.splice(a.indexOf(c), 1) : a.push(c); delete D.split[c];
+    el.classList.toggle('on'); applyBar(); return;
   }
   if ((el = t.closest('[data-preset]'))) { preset(el.dataset.preset); return; }
   if ((el = t.closest('[data-days]'))) { preset(el.dataset.days); return; }
   if (t.closest('#pl-adj')) { S.editSplit = !S.editSplit; t.closest('#pl-adj').textContent = S.editSplit ? 'Done' : 'Fix channel shares'; updatePlan(); return; }
   if (t.closest('#fl-csv')) { if (S.sched) download('weekly-schedule-' + S.sched.start + '.csv', scheduleCSV()); return; }
   if (t.closest('#pl-split-reset')) { S.P.split = {}; savePlan(); recalc(); updatePlan(); return; }
-  if (t.closest('#p-reset')) { const keep = S.P.budget; S.P = Object.assign({}, DEFAULT_P, { budget: keep }); savePlan(); recalc(); vPlan($('#v-plan')); return; }
+  if (t.closest('#p-reset')) { S.PD = JSON.parse(JSON.stringify(Object.assign({}, DEFAULT_P, { budget: S.P.budget, rates: S.P.rates, disc: S.P.disc }))); vPlan($('#v-plan')); toast('Defaults loaded: click Apply to use them'); return; }
   if (t.closest('#pl-save') || t.closest('#sc-save')) { const n = prompt('Name this scenario', 'Scenario ' + String.fromCharCode(65 + S.scenarios.length % 26)); if (n !== null) { saveScenario(n, S.cur); if (S.TAB === 'scen') vScen($('#v-scen')); } return; }
   if (t.closest('#pl-csv') || t.closest('#ex-csv')) { const c = curAsScen(); if (c) download('spot-plan-' + new Date().toISOString().slice(0, 10) + '.csv', planCSV(c)); return; }
   if (t.closest('[data-belt]')) { S.SD.h = +t.closest('[data-belt]').dataset.belt; S.SD.sdScope = 'plan'; S.SD.sdDays = 'all'; const tb = $('#tabs [data-tab=dup]'); if (tb) tb.click(); return; }
@@ -1378,15 +1400,21 @@ document.addEventListener('change', e => {
     if (i < S.DR.levels.length - 1 && t.value) S.DR.levels.slice(i + 1).forEach(k => { if (!L.includes(k)) L.push(k); });
     S.DR.levels = L.slice(0, 3); S.DR.open.clear(); vDrill($('#v-drill')); return;
   }
+  if (t.dataset.bkAdd !== undefined && t.value) { const k = t.value; S.P.add = [...new Set([...(S.P.add || []), k])]; S.P.excl = S.P.excl.filter(x => x !== k); S.P.frozen = null; savePlan(); recalc(); updatePlan(); toast('Added to the basket'); return; }
   if (t.dataset.split !== undefined) { S.P.split[t.dataset.split] = Math.max(0, Math.min(100, +t.value || 0)); savePlan(); recalc(); updatePlan(); return; }
+  if (t.dataset.p !== undefined && t.type !== 'number' && inSettings(t)) {
+    const D = draft(); D[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value;
+    if (D.end && D.end < D.start) D.end = D.start;
+    if (t.type === 'date') vPlan($('#v-plan')); else applyBar(); return;
+  }
   if (t.dataset.p !== undefined && t.type !== 'number') {
     S.P[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value;
     if (S.P.end && S.P.end < S.P.start) S.P.end = S.P.start;
     savePlan(); recalc(); if (t.type === 'date' && S.TAB === 'plan') vPlan($('#v-plan')); else refreshPlanViews(); return;
   }
   if (t.dataset.cr !== undefined) {
-    const c = S.P.creatives[+t.dataset.cr], f = t.dataset.f; c[f] = f === 'name' ? t.value.trim() || 'Creative' : Math.max(0, +t.value || 0);
-    S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return;
+    const D = draft(), c = D.creatives[+t.dataset.cr], f = t.dataset.f; c[f] = f === 'name' ? t.value.trim() || 'Creative' : Math.max(0, +t.value || 0);
+    vPlan($('#v-plan')); return;
   }
   if ((t.dataset.rate !== undefined || t.dataset.disc !== undefined) && !S.P.frozen && S.cur) S.P.frozen = Object.fromEntries(S.cur.kept.map(x => [x.key, x.spots]));
   if (t.dataset.rate !== undefined) { const v = +String(t.value).replace(/[^\d.]/g, ''); if (v > 0) S.P.rates[t.dataset.rate] = v; else delete S.P.rates[t.dataset.rate]; savePlan(); recalc(); refreshPlanViews(); return; }
@@ -1400,11 +1428,12 @@ document.addEventListener('change', e => {
 });
 let qTimer, pTimer;
 document.addEventListener('input', e => {
-  const t = e.target, P = S.P;
+  const t = e.target; let P = S.P;
   if (t.id === 'f-q') { S.FS.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(applyFilters, 250); return; }
   if (t.id === 'f-catq') { fillCats(t.value); return; }
   if (t.id === 'dq') { S.DQ = t.value; S.DPAGE = 0; clearTimeout(qTimer); qTimer = setTimeout(() => { vData($('#v-data')); const i = $('#dq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); return; }
-  const upd = () => { savePlan(); clearTimeout(pTimer); pTimer = setTimeout(() => { recalc(); refreshPlanViews(); }, 150); };
+  if (inSettings(t)) P = draft();
+  const upd = inSettings(t) ? applyBar : () => { savePlan(); clearTimeout(pTimer); pTimer = setTimeout(() => { recalc(); refreshPlanViews(); }, 150); };
   if (t.dataset.p !== undefined && t.type === 'number') { const v = +t.value; if (t.value !== '' && isFinite(v)) { P[t.dataset.p] = v; upd(); } return; }
   if (t.dataset.pa !== undefined) {
     const v = Math.max(0, Math.min(100, +t.value || 0)); P[t.dataset.pa][+t.dataset.i] = v;

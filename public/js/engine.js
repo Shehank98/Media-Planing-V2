@@ -187,15 +187,20 @@ export function campaignDays(P) {
   const days = Array.from({ length: n }, (_, i) => { const d = new Date(s.getTime() + i * 864e5); return { iso: iso(d), day: DAYS[(d.getDay() + 6) % 7], w: Math.floor(i / 7) }; });
   return { start: s0, end: days[days.length - 1].iso, days, W: Math.ceil(n / 7) };
 }
-// Creatives (brand / version, duration in seconds, rotation share). Shares are normalised to 1.
+// Creatives (brand / version, duration in seconds, share of the BUDGET). Shares are normalised to 1
+// (w). A creative's share of spots follows from its budget share and length: sw ~ w / duration,
+// so a 20-sec creative with the same budget as a 10-sec one gets half as many spots.
 export function creativeMix(P) {
   const list = (P.creatives && P.creatives.length ? P.creatives : [{ name: 'Creative A', dur: P.spotLen || 30, share: 100 }])
     .map(c => ({ name: String(c.name || 'Creative').trim() || 'Creative', dur: Math.max(1, +c.dur || 30), share: Math.max(0, +c.share || 0) }));
   const tot = list.reduce((a, c) => a + c.share, 0) || list.length;
   list.forEach(c => c.w = tot === list.length && !list.some(x => x.share) ? 1 / list.length : c.share / tot);
+  const inv = list.reduce((a, c) => a + c.w / c.dur, 0) || 1;
+  list.forEach(c => c.sw = c.w / c.dur / inv);
   return list;
 }
-export const avgLen = P => creativeMix(P).reduce((a, c) => a + c.w * c.dur, 0);
+// Average spot length: spots are shared by sw, so this is the budget-weighted harmonic mean.
+export const avgLen = P => creativeMix(P).reduce((a, c) => a + c.sw * c.dur, 0);
 const dayPattern = days => {
   const has = d => days.includes(d), wd = DAYS.slice(0, 5).every(has), we = has('Saturday') && has('Sunday');
   if (wd && we) return 'MON - SUN'; if (wd && !has('Saturday') && !has('Sunday')) return 'MON TO FRI';
@@ -301,12 +306,16 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const tierSp = [0, 0, 0, 0], dpSp = {}, chSp = {}, chN = {};
   DPS.forEach(d => dpSp[d] = 0); byCh.forEach((_, c) => { chSp[c] = 0; });
   const E = 1e-6;
-  let openBasket = false; // top-up may add programmes beyond the per-tier limit to reach a channel's budget
-  const ok = x => spent + x.cost <= B + E && x.cnt < x.capTot && (x.cnt > 0 || openBasket || (chN[x.ch + x.tier] || 0) < P.nProg || x.locked) &&
+  // Programme basket: on each channel, the best nProg programmes of every tier that has budget
+  // (best = average TVR x steadiness factor), plus locked programmes and ones the planner added.
+  const added = new Set(P.add || []), nB = Math.max(1, Math.round(P.nProg || 2)), rank = x => x.mean * x.sf;
+  byCh.forEach(list => [1, 2, 3].forEach(t => { if (tiers[t - 1] > 0) list.filter(x => x.tier === t).sort((a, b) => rank(b) - rank(a)).slice(0, nB).forEach(x => x.inB = true); }));
+  items.forEach(x => { if (x.locked) x.inB = true; if (added.has(x.key)) { x.inB = true; x.added = true; } });
+  const ok = x => x.inB && spent + x.cost <= B + E && x.cnt < x.capTot &&
     dpSp[x.dp] + x.cost <= dpMax[x.dp] * B + E && chSp[x.ch] + x.cost <= chAlloc[x.ch] * B + E;
   const gain = x => { const R = chR(x.ch, x, x.cnt + 1); return (alpha * (net(x.ch, R) - curNet) + (1 - alpha) * x.mean) * x.sf / x.cost; };
   let phase = '';
-  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) { chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; if (openBasket) x.topup = true; } x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
+  const take = (x, g) => { if (trace) trace.push({ phase, p: x.p, ch: x.ch, tier: x.tier, k: x.cnt + 1, cost: x.cost, gain: g, before: curNet, after: net(x.ch, chR(x.ch, x, x.cnt + 1)), spent: spent + x.cost }); if (!x.cnt) chN[x.ch + x.tier] = (chN[x.ch + x.tier] || 0) + 1; x.cnt++; spent += x.cost; tierSp[x.tier] += x.cost; dpSp[x.dp] += x.cost; chSp[x.ch] += x.cost; chRv.set(x.ch, chR(x.ch)); curNet = net(); };
   const fill = (pool, extra) => {
     for (;;) {
       let best = null, bg = -Infinity;
@@ -319,24 +328,15 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   if (frozen) { phase = 'fixed'; items.forEach(x => { for (let i = 0, n = Math.max(0, frozen[x.key] | 0); i < n; i++) take(x, null); }); }
   else {
   phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < Math.min(act, x.capTot) && ok(x)) take(x, null); });
+  // Every basket programme gets a first spot (best value first) so the whole basket is on air.
+  phase = 'basket'; fill(items, x => x.cnt === 0);
   phase = 'minimums';
   Object.keys(chFix).forEach(ch => fill(byCh.get(ch) || [], x => chSp[ch] + x.cost <= chFix[ch] * B + E));
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
   [1, 2, 3].forEach(t => (phase = 'tier' + t) && fill(items.filter(x => x.tier === t), x => tierSp[t] + x.cost <= tiers[t - 1] / 100 * B + E));
   phase = 'leftover'; fill(items);
-  // Top-up: bring each channel close to its budget. First more spots on programmes already
-  // in the basket, then (if money is still left) the channel's next best programmes.
-  // A new programme is added one at a time and filled before the next one, so the basket stays short.
-  phase = 'topup';
-  for (;;) {
-    fill(items, x => x.cnt > 0 || x.locked);
-    openBasket = true;
-    let best = null, bg = -Infinity;
-    for (const x of items) { if (x.cnt || !ok(x)) continue; const g = gain(x); if (g > bg) { bg = g; best = x; } }
-    if (best) take(best, bg);
-    openBasket = false;
-    if (!best) break;
-  }
+  // Top-up: more spots on basket programmes until each channel's next spot no longer fits.
+  phase = 'topup'; fill(items);
   }
 
   const tot = spent || 1;
@@ -348,7 +348,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   byCh.forEach((_, ch) => { if (!m.has(ch) && chAlloc[ch] > 0) m.set(ch, { ch, w: 0, bud: 0, progs: [], spots: 0, views: 0, R: 0 }); });
   m.forEach(c => {
     c.allocW = chAlloc[c.ch] || 0; c.alloc = c.allocW * B; c.gap = Math.max(0, c.alloc - c.bud);
-    const its = byCh.get(c.ch) || [], fits = its.filter(x => x.cnt < x.capTot);
+    const its = (byCh.get(c.ch) || []).filter(x => x.inB), fits = its.filter(x => x.cnt < x.capTot);
     const cheapest = fits.length ? Math.min(...fits.map(x => x.cost)) : Infinity;
     // Why money is left: smaller than one more spot, or every programme is full.
     c.gapWhy = c.gap < 1 ? '' : !fits.length ? 'cap' : cheapest > c.gap + E ? 'spot' : spent + cheapest > B + E ? 'budget' : 'daypart';
@@ -357,7 +357,9 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const chs = [...m.values()].sort((a, b) => b.alloc - a.alloc || b.w - a.w);
   const gross = chs.reduce((a, c) => a + c.R, 0), views = kept.reduce((a, x) => a + x.views, 0);
   return {
-    B, f, spent, unspent: Math.max(0, B - spent), over: Math.max(0, spent - B), fixed: !!frozen, kept, dropped: [], chs, gross, net: curNet,
+    B, f, spent, unspent: Math.max(0, B - spent), over: Math.max(0, spent - B), fixed: !!frozen, kept, dropped: [], chs, gross, net: curNet, nB,
+    // Basket programmes that got no spot (no money left on their channel), and every basket key.
+    miss: items.filter(x => x.inB && !x.cnt).map(x => ({ ...x, spots: 0, bud: 0, views: 0, R: 0, k: 0, atCap: false })), basketKeys: items.filter(x => x.inB).map(x => x.key),
     loss: gross > 0 ? (gross - curNet) / gross : 0, eff: B > 0 ? curNet / (B / 1e6) : 0, views, spots: kept.reduce((a, x) => a + x.spots, 0),
     freq: curNet > 0 && views > 0 ? views / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? views / curNet : 0, 3), capTot: capWk * act, act, W, cal, thr: plan.thr, relaxed,
     tiers: [1, 2, 3].map(t => ({ t, target: tiers[t - 1], actual: tierSp[t] / tot * 100, n: kept.filter(x => x.tier === t).length, avail: items.filter(x => x.tier === t).length })),
@@ -422,15 +424,23 @@ export function buildSchedule(A, P, dupFn) {
       }
     });
   });
-  // Creative rotation: each spot gets the creative furthest below its share,
-  // balancing within the programme first and across the whole plan second.
+  // Creative rotation by BUDGET share: each spot goes to the creative whose money (across the
+  // plan) and airtime (within this programme) are furthest below its share once this spot is
+  // added - a weighted fair-share rule, so the paid value per creative ends close to its %.
   units.sort((a, b) => a.d.iso < b.d.iso ? -1 : a.d.iso > b.d.iso ? 1 : a.x.hour - b.x.hour);
-  const gCnt = mix.map(() => 0), pCnt = new Map(); let gN = 0;
+  const gVal = mix.map(() => 0), gCnt = mix.map(() => 0), pSec = new Map(); let gT = 0;
   units.forEach(u => {
-    const pc = pCnt.get(u.x.key) || mix.map(() => 0), pn_ = pc.reduce((a, b) => a + b, 0);
-    let best = 0, bs = -Infinity;
-    mix.forEach((c, i) => { const sc = (c.w * (pn_ + 1) - pc[i]) + .5 * (c.w * (gN + 1) - gCnt[i]); if (sc > bs + 1e-9) { bs = sc; best = i; } });
-    pc[best]++; gCnt[best]++; gN++; pCnt.set(u.x.key, pc); u.cr = best;
+    const ps = pSec.get(u.x.key) || mix.map(() => 0), pT = ps.reduce((a, b) => a + b, 0);
+    let best = -1, bs = Infinity;
+    mix.forEach((c, i) => {
+      if (!(c.w > 0)) return;
+      const cost = u.x.net30 * c.dur / 30;
+      const sc = (gVal[i] + cost) / c.w / (gT + cost) + .5 * (ps[i] + c.dur) / c.w / (pT + c.dur);
+      if (sc < bs - 1e-12) { bs = sc; best = i; }
+    });
+    if (best < 0) best = 0;
+    const cost = u.x.net30 * mix[best].dur / 30;
+    gVal[best] += cost; gT += cost; gCnt[best]++; ps[best] += mix[best].dur; pSec.set(u.x.key, ps); u.cr = best;
   });
   // Aggregate to one row per date x programme x creative.
   const map = new Map();
@@ -481,7 +491,7 @@ export function healthChecks(rows, plan, A, P, getD) {
   const anchors = it.filter(x => x.role === 'anchor');
   L.push({ t: anchors.length ? 'ok' : 'wa', m: anchors.length ? `${anchors.length} anchor program${anchors.length > 1 ? 's' : ''} carry the plan (Tier 1 and steady)` : 'No anchor programs: nothing in the basket is both Tier 1 and steady' });
   if (A.fixed) L.push({ t: A.over > 0 ? 'wa' : 'in', m: A.over > 0 ? `Schedule kept as planned after rate edits: it is <b>${lkr(A.over)} over budget</b>. Re-optimise to fit the budget with the new rates.` : `Schedule kept as planned after rate edits (${lkr(A.unspent)} under budget). Re-optimise to use the new rates.` });
-  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every programme there is at its spot cap or daypart limit. Raise the spots-per-week or spots-per-day cap, lower the minimum TVR, widen daypart limits, or lower that channel's share.` }); }
+  if (!A.fixed && A.unspent > A.B * .02) { const short = A.chs.filter(c => c.gapWhy === 'cap' || c.gapWhy === 'daypart'); L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent${short.length ? `: ${short.map(c => `${chName(c.ch)} has ${lkr(c.gap)} left`).join(', ')}` : ''}. Every basket programme there is at its spot cap or daypart limit. Add a programme to that channel's basket, pick more programmes per tier, raise the spots-per-week or spots-per-day cap, or lower that channel's share.` }); }
   A.tiers.forEach(t => { if (t.target > 0 && Math.abs(t.actual - t.target) > 10) L.push({ t: 'in', m: `Tier ${t.t} gets ${nf(t.actual, 0)}% against a ${nf(t.target, 0)}% target${t.avail ? '' : ' (no Tier ' + t.t + ' programs in this brief)'}; leftover budget rolled to other tiers.` }); });
   A.dps.forEach(d => { if (d.present && d.min > 0 && d.actual + .5 < d.min) L.push({ t: 'wa', m: `${d.d} gets ${nf(d.actual, 0)}%, below its ${nf(d.min, 0)}% minimum. Not enough spots available there under the caps.` }); });
   if (A.relaxed) L.push({ t: 'in', m: 'Daypart maximums were scaled up because the brief only covers some dayparts.' });
