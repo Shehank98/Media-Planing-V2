@@ -15,6 +15,7 @@ const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).
 /* ---------- state ---------- */
 const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); };
 const DEFAULT_P = {
+  sr: 85,
   budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [],
   strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
   weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'bestday', dupThr: .5, pv: 2, repQ: 40,
@@ -625,24 +626,36 @@ const memoText = () => $('#pl-memo') ? $('#pl-memo').innerText : '';
 
 /* ---------- Schedule (booking sheet per channel) ---------- */
 const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Booking schedule in the agency layout. Per row: TVR (average in the ratings), GRP = TVR x spots,
+// NGRP = GRP x duration / 30 (30-sec equivalent), rate card and negotiated rates for the
+// creative's duration, All Exposure Value = rate card x spots, Media Value = negotiated x spots,
+// Investment 100% = Media Value, SR Value = Investment x SR %. CPRP = Media Value / GRP,
+// NCPRP = Media Value / NGRP. Taxes apply to Investment and SR Value.
 function scheduleModel() {
   const A = S.cur, Sc = S.sched, P = S.P;
-  const sscl = (+P.sscl || 0) / 100, vat = (+P.vat || 0) / 100;
+  const sscl = (+P.sscl || 0) / 100, vat = (+P.vat || 0) / 100, srP = (P.sr ?? 85) / 100;
+  const tax = v => { const a = v * sscl, b = (v + a) * vat; return { sscl: a, vat: b, total: v + a + b }; };
   const chans = A.chs.map(c => {
     const progs = A.kept.filter(x => x.ch === c.ch).sort((a, b) => (a.from || '') < (b.from || '') ? -1 : 1);
     const sections = Sc.mix.map((m, i) => ({ m, i, rows: progs.map(x => {
       const rs = Sc.rows.filter(r => r.key === x.key && r.cr === i);
       const byDate = {}; rs.forEach(r => byDate[r.date] = (byDate[r.date] || 0) + r.spots);
-      const spots = rs.reduce((a, r) => a + r.spots, 0), rc = x.rate30 * m.dur / 30, ng = x.net30 * m.dur / 30;
-      return { x, byDate, spots, rc, ng, trc: rc * spots, tng: ng * spots };
+      const spots = rs.reduce((a, r) => a + r.spots, 0), rc = x.rate30 * m.dur / 30, ng = x.net30 * m.dur / 30, tvr = x.mean, grp = tvr * spots;
+      return { x, byDate, spots, rc, ng, trc: rc * spots, tng: ng * spots, tvr, grp, ngrp: grp * m.dur / 30, sr: ng * spots * srP };
     }).filter(r => r.spots > 0) })).filter(sec => sec.rows.length);
-    const all = sections.flatMap(sec => sec.rows);
-    const net = all.reduce((a, r) => a + r.tng, 0), rcT = all.reduce((a, r) => a + r.trc, 0), spots = all.reduce((a, r) => a + r.spots, 0);
-    const tS = net * sscl, tV = (net + tS) * vat;
-    return { ch: c.ch, sections, net, rcT, spots, sscl: tS, vat: tV, total: net + tS + tV, disc: +(P.disc[c.ch] || 0) };
+    sections.forEach(sec => { sec.paid = sec.rows.reduce((a, r) => a + r.tng, 0); sec.spots = sec.rows.reduce((a, r) => a + r.spots, 0); });
+    const all = sections.flatMap(sec => sec.rows), sum = k => all.reduce((a, r) => a + r[k], 0);
+    const net = sum('tng'), t = tax(net), sr = sum('sr'), ts = tax(sr), grp = sum('grp'), ngrp = sum('ngrp');
+    sections.forEach(sec => sec.ratio = net > 0 ? sec.paid / net : 0);
+    return { ch: c.ch, sections, net, rcT: sum('trc'), spots: sum('spots'), grp, ngrp, cprp: grp > 0 ? net / grp : 0, ncprp: ngrp > 0 ? net / ngrp : 0,
+      sscl: t.sscl, vat: t.vat, total: t.total, sr, srSscl: ts.sscl, srVat: ts.vat, srTotal: ts.total, disc: +(P.disc[c.ch] || 0) };
   });
   const T = k => chans.reduce((a, c) => a + c[k], 0);
-  return { chans, days: Sc.days, mix: Sc.mix, sscl, vat, tot: { net: T('net'), rcT: T('rcT'), spots: T('spots'), sscl: T('sscl'), vat: T('vat'), total: T('total') } };
+  const tot = { net: T('net'), rcT: T('rcT'), spots: T('spots'), sscl: T('sscl'), vat: T('vat'), total: T('total'), grp: T('grp'), ngrp: T('ngrp'), sr: T('sr'), srSscl: T('srSscl'), srVat: T('srVat'), srTotal: T('srTotal') };
+  tot.cprp = tot.grp > 0 ? tot.net / tot.grp : 0; tot.ncprp = tot.ngrp > 0 ? tot.net / tot.ngrp : 0;
+  // Assets (creatives) across all channels: paid value and share of the paid value.
+  const assets = Sc.mix.map((m, i) => { const paid = chans.reduce((a, c) => a + (c.sections.find(x => x.i === i)?.paid || 0), 0); return { m, i, paid, ratio: tot.net > 0 ? paid / tot.net : 0 }; });
+  return { chans, days: Sc.days, mix: Sc.mix, sscl, vat, srP, tot, assets };
 }
 function vSchedule(el) {
   const A = S.cur, P = S.P;
@@ -653,20 +666,25 @@ function vSchedule(el) {
   const months = []; days.forEach(d => { const k = d.iso.slice(0, 7); const l = months[months.length - 1]; if (l && l.k === k) l.n++; else months.push({ k, n: 1, label: MONS[+k.slice(5) - 1] + ' ' + k.slice(0, 4) }); });
   const wk = d => d.day === 'Saturday' || d.day === 'Sunday';
   const L = v => ni(Math.round(v));
-  const head = `<tr class="h1"><th class="sx" colspan="12"></th>${months.map(m => `<th class="mth" colspan="${m.n}">${m.label}</th>`).join('')}</tr>
-    <tr><th class="sx l">Programme</th><th class="l">Day</th><th>From</th><th>To</th><th>Dur</th><th>Spots</th><th class="l">Brand</th><th title="Rate card for 30 seconds. Estimated values in italics: type the real rate.">Rate card 30s</th><th>Rate card</th><th>Negotiated</th><th>Total rate card</th><th>Total negotiated</th>${days.map(d => `<th class="dc ${wk(d) ? 'we' : ''}">${d.day[0]}<br>${+d.iso.slice(8)}</th>`).join('')}</tr>`;
-  const body = C.sections.map(sec => `<tr class="secr"><td class="sx l" colspan="12">${esc(sec.m.name)} · ${sec.m.dur} sec</td>${days.map(d => `<td class="${wk(d) ? 'we' : ''}"></td>`).join('')}</tr>` +
-    sec.rows.map(r => `<tr><td class="sx l"><button class="nm" ${xa({ ch: r.x.ch, p: r.x.p })}>${esc(pn(r.x.p))}</button></td><td class="l">${r.x.pattern}</td><td>${r.x.from}</td><td>${r.x.to}</td><td>${sec.m.dur}</td><td><b>${r.spots}</b></td><td class="l">${esc(sec.m.name)}</td>
+  const NC = 16, srL = `SR Value ${nf(M.srP * 100, 0)}%`, F2 = v => nf(v, 2);
+  const head = `<tr class="h1"><th class="sx" colspan="${NC}"></th>${months.map(m => `<th class="mth" colspan="${m.n}">${m.label}</th>`).join('')}</tr>
+    <tr><th class="sx l">Programme Name</th><th class="l">Day</th><th>From</th><th>To</th><th>Dur</th><th title="Average TVR in the ratings file">TVR</th><th title="TVR × spots">GRP</th><th title="GRP × duration ÷ 30 (30-sec equivalent)">NGRP</th><th>No of Spots</th><th title="Rate card for 30 seconds. Estimated values in italics: type the real rate.">Rate card 30s</th><th title="30-sec rate card ÷ 30 × duration">Rate Card Rate</th><th title="Rate card rate × (1 − discount)">Negotiated Rate</th><th title="Rate card rate × spots">All Exposure Value</th><th title="Negotiated rate × spots">Media Value</th><th>Investment 100%</th><th>${srL}</th>${days.map(d => `<th class="dc ${wk(d) ? 'we' : ''}">${d.day[0]}<br>${+d.iso.slice(8)}</th>`).join('')}</tr>`;
+  const body = C.sections.map(sec => `<tr class="secr"><td class="sx l" colspan="${NC}">${esc(sec.m.name)} · ${sec.m.dur} sec</td>${days.map(d => `<td class="${wk(d) ? 'we' : ''}"></td>`).join('')}</tr>` +
+    sec.rows.map(r => `<tr><td class="sx l"><button class="nm" ${xa({ ch: r.x.ch, p: r.x.p })}>${esc(pn(r.x.p))}</button></td><td class="l">${r.x.pattern}</td><td>${r.x.from}</td><td>${r.x.to}</td><td>${sec.m.dur}</td><td>${F2(r.tvr)}</td><td>${F2(r.grp)}</td><td>${F2(r.ngrp)}</td><td><b>${r.spots}</b></td>
       <td><input class="rate ${r.x.rateSet ? '' : 'est'}" data-rate="${esc(r.x.key)}" value="${Math.round(r.x.rate30)}" title="${r.x.rateSet ? 'Your rate card value' : 'Estimated: CPRP × TVR (min. rate). Type the real 30-sec rate.'}"></td>
-      <td>${L(r.rc)}</td><td>${L(r.ng)}</td><td>${L(r.trc)}</td><td><b>${L(r.tng)}</b></td>${days.map(d => { const v = r.byDate[d.iso]; return `<td class="dc ${wk(d) ? 'we' : ''} ${v ? 'on' : ''}">${v || ''}</td>`; }).join('')}</tr>`).join('')).join('');
+      <td>${L(r.rc)}</td><td>${L(r.ng)}</td><td>${L(r.trc)}</td><td>${L(r.tng)}</td><td><b>${L(r.tng)}</b></td><td>${L(r.sr)}</td>${days.map(d => { const v = r.byDate[d.iso]; return `<td class="dc ${wk(d) ? 'we' : ''} ${v ? 'on' : ''}">${v || ''}</td>`; }).join('')}</tr>`).join('')).join('');
   const dayTot = days.map(d => C.sections.reduce((a, sec) => a + sec.rows.reduce((b, r) => b + (r.byDate[d.iso] || 0), 0), 0));
-  const foot = `<tr class="tot"><td class="sx l" colspan="5">${esc(chName(C.ch))} total</td><td>${C.spots}</td><td></td><td></td><td></td><td></td><td>${L(C.rcT)}</td><td>${L(C.net)}</td>${dayTot.map((v, i) => `<td class="dc ${wk(days[i]) ? 'we' : ''}">${v || ''}</td>`).join('')}</tr>`;
+  const foot = `<tr class="tot"><td class="sx l" colspan="6">${esc(chName(C.ch))} total</td><td>${F2(C.grp)}</td><td>${F2(C.ngrp)}</td><td>${C.spots}</td><td></td><td></td><td></td><td>${L(C.rcT)}</td><td>${L(C.net)}</td><td>${L(C.net)}</td><td>${L(C.sr)}</td>${dayTot.map((v, i) => `<td class="dc ${wk(days[i]) ? 'we' : ''}">${v || ''}</td>`).join('')}</tr>`;
+  const assetTbl = (rows, net) => `<div class="tw"><table class="asset"><thead><tr><th class="l" colspan="2">Asset</th><th>Ratio</th><th>Paid Value</th><th>Spots</th></tr></thead><tbody>${rows.map((a, i) => `<tr>${i === 0 ? `<td class="l" rowspan="${rows.length}"><b>Commercial</b></td>` : ''}<td class="l">${esc(a.m.name)} - ${a.m.dur} Sec</td><td>${nf(a.ratio * 100, 0)}%</td><td>${L(a.paid)}</td><td>${a.spots ?? ''}</td></tr>`).join('')}
+    <tr class="tot"><td class="l" colspan="2">Total</td><td>100%</td><td>${L(net)}</td><td></td></tr></tbody></table></div>`;
+  const cprpTbl = c => `<div class="tw"><table class="asset"><tbody><tr><td class="l"><b>Com Only CPRP</b></td><td>${nf(c.cprp, 2)}</td></tr><tr><td class="l"><b>Com Only NCPRP</b></td><td>${nf(c.ncprp, 2)}</td></tr></tbody></table></div>
+    <p class="hint">CPRP = Media Value ÷ GRP (${L(c.net)} ÷ ${F2(c.grp)}). NCPRP = Media Value ÷ NGRP (${L(c.net)} ÷ ${F2(c.ngrp)}), where NGRP converts every spot to a 30-sec equivalent.</p>`;
   const sm = (l, v, cls = '') => `<div class="m ${cls}"><small>${l}</small><b>${v}</b></div>`;
   el.innerHTML = `
   <div class="vhead"><div><h2>Booking schedule</h2><p>Day-by-day spots per channel, by creative, ready to send to channels. Same layout as the Excel export.</p></div>
     <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule</button></span></div>
   ${A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
-  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Spots', ni(M.tot.spots))}${sm('Rate card value', 'LKR ' + L(M.tot.rcT))}${sm('Negotiated (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
+  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
   <div class="grid g2">
     ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
       <label class="fld"><span>Client</span><input type="text" data-meta="client" value="${esc(meta.client || '')}"></label>
@@ -674,16 +692,22 @@ function vSchedule(el) {
       <label class="fld"><span>Campaign</span><input type="text" data-meta="campaign" value="${esc(meta.campaign || '')}"></label>
       <label class="fld"><span>Primary TG</span><input type="text" data-meta="tg" value="${esc(meta.tg || '')}" placeholder="e.g. 16-50 Male & Female SEC All"></label>
       <label class="fld"><span>SSCL %</span>${`<input type="number" data-p="sscl" min="0" max="20" step="0.5" value="${P.sscl}">`}</label>
-      <label class="fld"><span>VAT %</span>${`<input type="number" data-p="vat" min="0" max="30" step="0.5" value="${P.vat}">`}</label></div>
+      <label class="fld"><span>VAT %</span>${`<input type="number" data-p="vat" min="0" max="30" step="0.5" value="${P.vat}">`}</label>
+      <label class="fld"><span>SR value % (of investment)</span>${`<input type="number" data-p="sr" min="0" max="100" step="1" value="${P.sr ?? 85}">`}</label></div>
       <p class="hint">Change the campaign dates, creatives or caps in <button class="link" data-tab-go="plan">Planner settings</button>; the schedule is rebuilt automatically.</p>`)}
-    ${panel('By channel', 'negotiated rate = rate card × (1 − discount)', `<div class="tw"><table><thead><tr><th>Channel</th><th>Discount %</th><th>Spots</th><th>Rate card</th><th>Negotiated</th><th>With taxes</th></tr></thead><tbody>
-      ${M.chans.map(c => `<tr><td>${dot(c.ch)}${esc(chName(c.ch))}</td><td><input class="rate" type="number" min="0" max="95" step="1" data-disc="${esc(c.ch)}" value="${c.disc}" style="width:64px"></td><td>${c.spots}</td><td>${L(c.rcT)}</td><td><b>${L(c.net)}</b></td><td>${L(c.total)}</td></tr>`).join('')}
-      <tr class="tot"><td>Total</td><td></td><td>${M.tot.spots}</td><td>${L(M.tot.rcT)}</td><td><b>${L(M.tot.net)}</b></td><td>${L(M.tot.total)}</td></tr></tbody></table></div>
+    ${panel('By channel', 'negotiated rate = rate card × (1 − discount) · CPRP = media value ÷ GRP', `<div class="tw"><table><thead><tr><th>Channel</th><th>Discount %</th><th>Spots</th><th>GRP</th><th>CPRP</th><th>Media value</th><th>With taxes</th></tr></thead><tbody>
+      ${M.chans.map(c => `<tr><td>${dot(c.ch)}${esc(chName(c.ch))}</td><td><input class="rate" type="number" min="0" max="95" step="1" data-disc="${esc(c.ch)}" value="${c.disc}" style="width:64px"></td><td>${c.spots}</td><td>${nf(c.grp, 1)}</td><td>${L(c.cprp)}</td><td><b>${L(c.net)}</b></td><td>${L(c.total)}</td></tr>`).join('')}
+      <tr class="tot"><td>Total</td><td></td><td>${M.tot.spots}</td><td>${nf(M.tot.grp, 1)}</td><td>${L(M.tot.cprp)}</td><td><b>${L(M.tot.net)}</b></td><td>${L(M.tot.total)}</td></tr></tbody></table></div>
       <p class="hint">Changing a rate or discount changes spot costs, so the plan is re-optimised.</p>`)}
   </div>
   <div class="panel"><div class="ph"><h3>Channel sheet</h3><span class="push"><div class="chips">${M.chans.map(c => `<button class="chip ${c.ch === C.ch ? 'on' : ''}" data-sch-ch="${esc(c.ch)}">${esc(chName(c.ch))} · ${c.spots}</button>`).join('')}</div></span></div>
     <div class="pb"><div class="tw sched-wrap"><table class="sched"><thead>${head}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
-    <div class="taxes"><span>Total negotiated <b>LKR ${L(C.net)}</b></span><span>SSCL ${P.sscl}% <b>LKR ${L(C.sscl)}</b></span><span>VAT ${P.vat}% <b>LKR ${L(C.vat)}</b></span><span>Total with taxes <b>LKR ${L(C.total)}</b></span></div>
+    <div class="tw" style="margin-top:10px"><table class="asset taxt"><thead><tr><th class="l"></th><th>Investment 100%</th><th>${srL}</th></tr></thead><tbody>
+      <tr><td class="l"><b>${esc(chName(C.ch))} total</b></td><td>${L(C.net)}</td><td>${L(C.sr)}</td></tr>
+      <tr><td class="l">SSCL ${P.sscl}%</td><td>${L(C.sscl)}</td><td>${L(C.srSscl)}</td></tr>
+      <tr><td class="l">VAT ${P.vat}%</td><td>${L(C.vat)}</td><td>${L(C.srVat)}</td></tr>
+      <tr class="tot"><td class="l">Total with taxes</td><td>${L(C.total)}</td><td>${L(C.srTotal)}</td></tr></tbody></table></div>
+    <div class="grid g2" style="margin-top:12px"><div><h4 class="h4">Assets on ${esc(chName(C.ch))}</h4>${assetTbl(C.sections.map(sec => ({ m: sec.m, paid: sec.paid, ratio: sec.ratio, spots: sec.spots })), C.net)}</div><div><h4 class="h4">Cost per rating point</h4>${cprpTbl(C)}</div></div>
     <p class="hint">Rate card 30s in <i>italics</i> is estimated from the rating; type the channel's rate card to replace it. Shaded columns are weekends. Click a programme for its ratings detail.</p></div></div>`;
 }
 async function runXlsx(btn) {
