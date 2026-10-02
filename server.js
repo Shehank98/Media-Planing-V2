@@ -132,7 +132,7 @@ function serveStatic(req, res) {
         e2 ? send(res, 404, 'Not found', 'text/plain') : send(res, 200, buf, TYPES['.html'], { 'Cache-Control': 'no-cache' }));
     }
     const type = TYPES[path.extname(file).toLowerCase()] || 'application/octet-stream';
-    const cache = type.startsWith('text/html') ? 'no-cache' : 'public, max-age=300';
+    const cache = /^(text\/html|text\/javascript|text\/css)/.test(type) ? 'no-cache' : 'public, max-age=300';
     fs.readFile(file, (e, buf) => e ? send(res, 500, 'Error', 'text/plain') : send(res, 200, buf, type, { 'Cache-Control': cache }));
   });
 }

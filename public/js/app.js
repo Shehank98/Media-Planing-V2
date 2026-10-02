@@ -29,7 +29,7 @@ const S = {
   DR: { levels: ['ch', 'cat', 'p'], open: new Set() },
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
-  fv: 'weeks', sched: null, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
+  fv: 'weeks', sched: null, SD: { h: null, sdDays: 'all', sdScope: 'plan' }, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
   chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
@@ -640,41 +640,151 @@ function planCSV(sc) {
 }
 
 /* ---------- Duplication ---------- */
+// Union of audiences where d(a, b) gives the overlap factor between two items.
+function unionOf(list, dfn) {
+  let U = 0; const inc = [];
+  [...list].sort((a, b) => b.R - a.R).forEach(c => {
+    if (!inc.length) U = c.R;
+    else { const d = inc.reduce((s, x) => s + dfn(x, c), 0) / inc.length; U = uni(U, c.R, d); }
+    inc.push(c);
+  });
+  return U;
+}
+const explain = (txt) => `<div class="explain"><span class="ic in">${ICON.in}</span><div>${txt}</div></div>`;
+const meaning = (txt) => `<div class="meaning"><b>What this means</b><p>${txt}</p></div>`;
+const howRead = (txt) => `<p class="howread"><b>How to read this:</b> ${txt}</p>`;
+
+function slotData() {
+  const SD = S.SD, A = S.cur;
+  const planKeys = A ? new Set(A.kept.map(x => x.key)) : new Set();
+  const planCh = A ? new Set(A.chs.map(c => c.ch)) : new Set(S.CH);
+  const dayOk = r => SD.sdDays === 'all' || (SD.sdDays === 'wd' ? DAYS.indexOf(r.day) < 5 : DAYS.indexOf(r.day) >= 5);
+  const scopeOk = r => SD.sdScope === 'plan' ? planKeys.has(r.ch + '||' + r.p) : SD.sdScope === 'planch' ? planCh.has(r.ch) : true;
+  const base = S.F.filter(r => dayOk(r) && scopeOk(r));
+  const hours = [...grp(base, r => r.h).values()].sort((a, b) => a.k - b.k);
+  if (SD.h == null || !hours.find(g => g.k === SD.h)) {
+    const best = [...hours].sort((a, b) => new Set(base.filter(r => r.h === b.k).map(r => r.ch + r.p)).size - new Set(base.filter(r => r.h === a.k).map(r => r.ch + r.p)).size || avgT(b) - avgT(a))[0];
+    SD.h = best ? best.k : null;
+  }
+  const rows = base.filter(r => r.h === SD.h);
+  const items = [...grp(rows, r => r.ch + '||' + r.p).values()].map(g => { const [ch, p] = g.k.split('||'); return { id: g.k, ch, p, R: avgR(g) || avgT(g) * 1.4, tvr: avgT(g), n: g.n, days: DAYS.filter(d => g.dc[d]) }; })
+    .sort((a, b) => b.R - a.R).slice(0, 10);
+  const dfn = (a, b) => a.ch === b.ch ? S.DINTRA : getD(a.ch, b.ch);
+  const net = unionOf(items, dfn), gross = items.reduce((s, x) => s + x.R, 0);
+  items.forEach(x => { x.uniq = Math.max(0, net - unionOf(items.filter(y => y !== x), dfn)); x.shared = Math.max(0, x.R - x.uniq); });
+  const pairs = [];
+  items.forEach((a, i) => items.forEach((b, j) => { if (j > i) { const d = dfn(a, b); pairs.push({ a, b, d, ov: a.R + b.R - uni(a.R, b.R, d) }); } }));
+  return { hours, items, net, gross, pairs, dfn };
+}
+
 function vDup(el) {
   const present = new Set(S.F.map(r => r.ch)), chs = S.CH.filter(c => present.has(c)), n = chs.length;
+  const A = S.cur;
+  // --- worked example from the two biggest plan channels
+  let ex = '';
+  if (A && A.chs.length >= 2) {
+    const a = A.chs[0], b = A.chs[1], d = getD(a.ch, b.ch), un = uni(a.R, b.R, d), both = a.R + b.R - un;
+    ex = `Over this campaign, <b>${esc(chName(a.ch))}</b> reaches ${nf(a.R, 1)}% and <b>${esc(chName(b.ch))}</b> reaches ${nf(b.R, 1)}%. Added together that is ${nf(a.R + b.R, 1)}%, but about <b>${nf(both, 1)}%</b> watch both, so the real number of different people is <b>${nf(un, 1)}%</b>.`;
+  }
+  // --- matrix
   let g = `<div class="tw"><div class="mx" style="grid-template-columns:110px repeat(${n},minmax(50px,1fr))"><div></div>${chs.map(c => `<div class="mh" title="${esc(chName(c))}">${esc(chName(c).replace(' TV', ''))}</div>`).join('')}`;
   chs.forEach(a => {
     g += `<div class="hr">${dot(a)}${esc(chName(a))}</div>`;
     chs.forEach(b => {
-      if (a === b) { g += `<input disabled value="1.00" aria-label="same channel">`; return; }
+      if (a === b) { g += `<input disabled value="—" aria-label="same channel">`; return; }
       const d = getD(a, b), edited = S.DUP[dkey(a, b)] != null;
-      g += `<input type="number" step="0.05" min="0" max="1" data-a="${esc(a)}" data-b="${esc(b)}" value="${d.toFixed(2)}" style="background:color-mix(in srgb,var(--accent) ${(d * 70).toFixed(0)}%,var(--panel));${edited ? 'font-weight:700;border-color:var(--ink)' : ''}" aria-label="Duplication ${esc(chName(a))} with ${esc(chName(b))}">`;
+      g += `<input type="number" step="0.05" min="0" max="1" data-a="${esc(a)}" data-b="${esc(b)}" value="${d.toFixed(2)}" title="${esc(chName(a))} and ${esc(chName(b))}: ${nf(d * 100, 0)} on a 0–100 overlap scale" style="background:color-mix(in srgb,var(--accent) ${(d * 70).toFixed(0)}%,var(--panel));color:${d > .6 ? 'var(--accent-ink)' : 'var(--ink)'};${edited ? 'font-weight:700;border-color:var(--ink)' : ''}" aria-label="Duplication ${esc(chName(a))} with ${esc(chName(b))}">`;
     });
   });
   g += '</div></div>';
-  el.innerHTML = `
-  <div class="vhead"><div><h2>Duplication and net reach</h2><p>10% reach on channel A + 10% on channel B is not 20%: some viewers watch both. Edit the overlap assumptions if you have measured data.</p></div>
-    <span class="push"><button class="btn sm" id="dup-reset">Reset to defaults</button></span></div>
-  <div class="grid g2">
-    <div class="col">
-      ${panel('Duplication matrix', '0 = independent audiences, 1 = the smaller audience sits fully inside the larger', g + `<label class="fld" style="margin:12px 0 0;display:flex;align-items:center;gap:12px"><span style="margin:0;white-space:nowrap">Overlap between programs on the same channel</span><input type="number" id="d-intra" step="0.05" min="0" max="1" value="${S.DINTRA}" style="width:80px"></label>
-        <label class="fld" style="margin:12px 0 0;display:flex;align-items:center;gap:12px"><span style="margin:0;white-space:nowrap">New reach from each repeat spot (% of the previous spot's new reach)</span><input type="number" id="d-rep" step="5" min="0" max="90" value="${S.P.repQ}" style="width:80px"></label>
-        <p class="hint">Formula: Net(A ∪ B) = A + B − overlap, where overlap = A×B/100 + d × (min(A,B) − A×B/100).</p>`)}
-    </div>
-    <div class="col">
-      ${panel('Gross vs net reach', 'channels added in order of strength · average reach per airing', '<div class="chart"><canvas id="c-net"></canvas></div>')}
-      ${panel('Competing slots', 'top channels, hours with the biggest head-to-head', '<div id="x2" style="max-height:320px;overflow:auto"></div>')}
-    </div>
-  </div>`;
+  // --- gross vs net
   const st = channelStats(S.F).map(c => ({ ch: c.ch, R: c.reach || c.tvr * 1.4 }));
   const gs = [], ns = []; let gr = 0;
-  st.forEach((c, i) => { gr += c.R; gs.push(+gr.toFixed(2)); ns.push(+netReach(st.slice(0, i + 1), getD).toFixed(2)); });
+  st.forEach((c, i) => { gr += c.R; gs.push(+gr.toFixed(1)); ns.push(+netReach(st.slice(0, i + 1), getD).toFixed(1)); });
+  const gains = ns.map((v, i) => i ? v - ns[i - 1] : v);
+  let knee = 1; gains.forEach((v, i) => { if (i && v >= 1) knee = i + 1; });
+  const gnMeaning = st.length > 1 ? `Watching one average programme on each of the top ${st.length} channels adds up to ${nf(gs[gs.length - 1], 1)}%, but only about <b>${nf(ns[ns.length - 1], 1)}% are different people</b>. The gap (${nf(gs[gs.length - 1] - ns[ns.length - 1], 1)} points) is people counted twice. After ${knee} channel${knee > 1 ? 's' : ''}, each extra channel adds less than 1 point of new people.` : 'Only one channel is in the filter.';
+  // --- slot
+  const SD = slotData();
+  const hopts = SD.hours.map(h => `<option value="${h.k}" ${h.k === S.SD.h ? 'selected' : ''}>${band(h.k)}</option>`).join('');
+  const it = SD.items;
+  let slotHTML;
+  if (!it.length) slotHTML = '<p class="muted">No programmes in this slot for the chosen days and scope. Try “All programmes” or another hour.</p>';
+  else {
+    const dupPct = SD.gross > 0 ? (SD.gross - SD.net) / SD.gross * 100 : 0;
+    const exc = [...it].sort((a, b) => b.uniq / b.R - a.uniq / a.R);
+    const top = [...SD.pairs].sort((a, b) => b.ov - a.ov)[0];
+    const sn = s => esc(pn(s.length > 22 ? s.slice(0, 21) + '…' : s));
+    const mxOv = Math.max(...SD.pairs.map(p => p.ov / Math.min(p.a.R, p.b.R)), .01);
+    const mtx = `<div class="tw"><table class="pdm"><thead><tr><th></th>${it.map((x, i) => `<th title="${esc(pn(x.p))} (${esc(chName(x.ch))})">${i + 1}</th>`).join('')}</tr></thead><tbody>${it.map((a, i) => `<tr><td class="l"><b>${i + 1}</b> ${sn(a.p)}<span class="sub">${dot(a.ch)}${esc(chName(a.ch))}</span></td>${it.map((b, j) => {
+      if (i === j) return `<td class="diag" title="${esc(pn(a.p))} reaches ${nf(a.R, 1)}%">${nf(a.R, 1)}</td>`;
+      const pr = SD.pairs.find(p => (p.a === a && p.b === b) || (p.a === b && p.b === a)), sh = pr.ov / Math.min(a.R, b.R);
+      return `<td style="background:color-mix(in srgb,var(--heat) ${(8 + 80 * sh / mxOv).toFixed(0)}%,var(--panel))" title="About ${nf(pr.ov, 1)}% of viewers watch both ${esc(pn(a.p))} and ${esc(pn(b.p))} (${nf(sh * 100, 0)}% of the smaller audience)${a.ch === b.ch ? '. Same channel.' : ''}">${nf(pr.ov, 1)}</td>`;
+    }).join('')}</tr>`).join('')}</tbody></table></div>`;
+    const sameCh = it.some((a, i) => it.some((b, j) => j > i && a.ch === b.ch));
+    slotHTML = `
+      <div class="kpis k4">
+        ${kp('Programmes in this slot', it.length, `${band(S.SD.h)} · ${{ all: 'all days', wd: 'weekdays', we: 'weekends' }[S.SD.sdDays]}`)}
+        ${kp('Reach added up', nf(SD.gross, 1) + '%', 'each programme counted separately')}
+        ${kp('Different people', nf(SD.net, 1) + '%', 'each person counted once', 'hl')}
+        ${kp('Duplicated', nf(dupPct, 0) + '%', 'of the added-up reach is the same people')}
+      </div>
+      <div class="grid g2" style="margin-top:12px">
+        <div>
+          <h4 class="h4">How much of each programme's audience is unique?</h4>
+          <div class="chart" style="height:${Math.max(220, it.length * 34 + 70)}px"><canvas id="c-sdup"></canvas></div>
+          ${howRead('each bar is a programme\'s reach. The <b>teal part</b> is viewers <i>only</i> this programme brings in. The <b>grey part</b> is viewers who also watch another programme in this list. Click a bar for the programme detail.')}
+        </div>
+        <div>
+          <h4 class="h4">Who watches both? (programme × programme)</h4>
+          ${mtx}
+          ${howRead(`numbers are the estimated % of all TV viewers who watch <b>both</b> programmes (on different nights). The grey diagonal is each programme's own reach. Darker orange = a bigger share of the smaller programme's audience also watches the other.${sameCh ? ' Programmes on the same channel use the within-channel overlap.' : ''}`)}
+        </div>
+      </div>
+      ${meaning(`If you buy all ${it.length} programmes at ${band(S.SD.h)}, they add up to ${nf(SD.gross, 1)}% but reach about <b>${nf(SD.net, 1)}% different people</b>. <b>${esc(pn(exc[0].p))}</b> (${esc(chName(exc[0].ch))}) brings the most viewers no one else here reaches (${nf(exc[0].uniq / exc[0].R * 100, 0)}% of its audience), so it is the best value for new reach. <b>${esc(pn(exc[exc.length - 1].p))}</b> mostly repeats viewers the others already reach (only ${nf(exc[exc.length - 1].uniq / exc[exc.length - 1].R * 100, 0)}% unique). ${top ? `The biggest overlap is between <b>${esc(pn(top.a.p))}</b> and <b>${esc(pn(top.b.p))}</b> (about ${nf(top.ov, 1)}% watch both).` : ''} These programmes air at the same hour, so on any one night a viewer can only watch one of them: the overlap is people who switch between them on different nights. Placing spots on all of them on the same night (a roadblock) reaches the most different people.`)}`;
+  }
+  el.innerHTML = `
+  <div class="vhead"><div><h2>Duplication: counting each viewer once</h2><p>Many people watch more than one channel or programme. This page shows how much the audiences overlap, so reach is not counted twice.</p></div>
+    <span class="push"><button class="btn sm" id="dup-reset">Reset overlap factors</button></span></div>
+  ${explain(`<b>The idea in one line:</b> if 30% of people watch channel A and 25% watch channel B, you do not reach 55%. Some people watch both, and they should be counted only once. ${ex}`)}
+
+  <h3 class="sec"><span>1</span> Between channels</h3>
+  <div class="grid g2">
+    ${panel('Channel overlap factors', 'how strongly two channels share viewers', g +
+      `<div class="legend" style="margin-top:10px">Low overlap ${[8, 25, 45, 60, 70].map(p => `<span class="sw" style="background:color-mix(in srgb,var(--accent) ${p}%,var(--panel))"></span>`).join('')} High overlap</div>` +
+      howRead('each cell is a factor from 0 to 1 for a pair of channels. <b>0</b> = the two audiences overlap only by chance. <b>1</b> = everyone in the smaller audience also watches the other channel. Big Sinhala channels (Hiru, Derana) share many viewers (about 0.70); Sinhala and Tamil channels share few (about 0.15–0.20). These are planning assumptions; type a new value if you have measured data. Bold cells are your edits.') +
+      `<div class="two" style="margin-top:12px"><label class="fld"><span>Overlap between programmes on the same channel</span><input type="number" id="d-intra" step="0.05" min="0" max="1" value="${S.DINTRA}"></label>
+       <label class="fld"><span>New viewers from each repeat spot (% of the previous spot)</span><input type="number" id="d-rep" step="5" min="0" max="90" value="${S.P.repQ}"></label></div>`)}
+    ${panel('Added-up reach vs different people', 'channels added in order of strength', '<div class="chart"><canvas id="c-net"></canvas></div>' +
+      howRead('the <b>grey</b> bars add each channel\'s average reach on top of the previous ones, counting people twice. The <b>teal</b> bars count each person once. The growing gap between them is duplication.') + meaning(gnMeaning))}
+  </div>
+
+  <h3 class="sec"><span>2</span> Between programmes in the same time slot</h3>
+  ${panel('Programme duplication in a slot', 'pick an hour to see how much its programmes share viewers',
+    `<div class="inl" style="margin-bottom:12px"><label class="inl"><span class="muted">Slot</span><select id="sd-h">${hopts}</select></label>
+      ${seg('sdDays', S.SD, [['all', 'All days'], ['wd', 'Weekdays'], ['we', 'Weekend']])}
+      ${seg('sdScope', S.SD, [['plan', 'Plan programmes'], ['planch', 'All on plan channels'], ['all', 'All channels']])}</div>` + slotHTML +
+    `<p class="hint">Estimates: the ratings file has no viewer-level data, so programme overlap is modelled from the channel overlap factors above (and the within-channel factor for two programmes on the same channel). Top 10 programmes by reach are shown.</p>`)}
+
+  <h3 class="sec"><span>3</span> Competing programmes at the same hour</h3>
+  ${panel('Head-to-head slots', 'the strongest programme per channel at each busy hour', '<div id="x2" style="max-height:340px;overflow:auto"></div>' +
+    howRead('each block is an hour where several of the top channels air programmes at the same time, sorted by combined rating. Click the hour to drill in.') +
+    meaning('At the same hour, viewers must choose one channel, so these programmes split the audience rather than duplicate it. Buying several of them on the same night reaches more different people (roadblock); spreading them over different nights repeats the message to the same people (stagger). Choose this in the Planner under Flighting.'))}`;
+
   mkChart('c-net', {
-    type: 'bar', data: { labels: st.map((c, i) => (i + 1) + '. ' + chName(c.ch)), datasets: [{ label: 'Gross reach %', data: gs, backgroundColor: css('--line'), borderRadius: 3 }, { label: 'Net reach %', data: ns, backgroundColor: css('--accent'), borderRadius: 3 }] },
-    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } } }, scales: { x: { grid: { display: false }, ticks: { maxRotation: 35 } } } }
+    type: 'bar', data: { labels: st.map((c, i) => (i + 1) + '. ' + chName(c.ch)), datasets: [{ label: 'Added up (counts people twice)', data: gs, backgroundColor: css('--line'), borderRadius: 3 }, { label: 'Different people', data: ns, backgroundColor: css('--accent'), borderRadius: 3 }] },
+    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } }, tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw}%`, afterBody: items => { const i = items[0].dataIndex; return `Counted twice: ${nf(gs[i] - ns[i], 1)} pts`; } } } }, scales: { x: { grid: { display: false }, ticks: { maxRotation: 35 } }, y: { beginAtZero: true, title: { display: true, text: '% of TV viewers' } } } }
+  });
+  if (it.length) mkChart('c-sdup', {
+    type: 'bar', data: {
+      labels: it.map((x, i) => `${i + 1}. ${pn(x.p).slice(0, 24)} (${chName(x.ch).replace(' TV', '')})`), datasets: [
+        { label: 'Only this programme reaches them', data: it.map(x => +x.uniq.toFixed(2)), backgroundColor: css('--accent'), borderRadius: 2 },
+        { label: 'Also watch another programme here', data: it.map(x => +x.shared.toFixed(2)), backgroundColor: css('--line'), borderRadius: 2 }]
+    },
+    options: { indexAxis: 'y', onClick: (e, els) => els.length && openDetail({ ch: it[els[0].index].ch, p: it[els[0].index].p }), plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } }, tooltip: { callbacks: { title: items => { const x = it[items[0].dataIndex]; return `${pn(x.p)} · ${chName(x.ch)}`; }, label: c => ` ${c.dataset.label}: ${nf(c.raw, 1)}%`, footer: items => { const x = it[items[0].dataIndex]; return `Reach ${nf(x.R, 1)}% · ${nf(x.uniq / x.R * 100, 0)}% unique · TVR ${nf(x.tvr, 1)} · ${x.n} airings`; } } } }, scales: { x: { stacked: true, beginAtZero: true, title: { display: true, text: '% of TV viewers' } }, y: { stacked: true, grid: { display: false } } } }
   });
   const cp = competing(S.F, st.slice(0, 5).map(c => c.ch), 10);
-  $('#x2').innerHTML = cp.length ? `<table><tbody>${cp.map(o => `<tr><td class="l" style="vertical-align:top"><button class="ib" ${xa({ h: o.h })}>${hl(o.h)}</button></td><td class="l" style="white-space:normal">${o.l.slice(0, 4).map(x => `<span class="sub" style="color:var(--ink)">${dot(x.ch)}${esc(chName(x.ch))}: ${esc(pn(x.p))} <span class="muted">TVR ${nf(x.m, 1)}</span></span>`).join('')}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No overlapping hours found.</p>';
+  $('#x2').innerHTML = cp.length ? `<table><tbody>${cp.map(o => `<tr><td class="l" style="vertical-align:top"><button class="ib" ${xa({ h: o.h })}>${band(o.h)}</button></td><td class="l" style="white-space:normal">${o.l.slice(0, 4).map(x => `<span class="sub" style="color:var(--ink)">${dot(x.ch)}${esc(chName(x.ch))}: ${esc(pn(x.p))} <span class="muted">TVR ${nf(x.m, 1)}</span></span>`).join('')}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No overlapping hours found.</p>';
 }
 
 /* ---------- Data table ---------- */
@@ -1034,6 +1144,7 @@ document.addEventListener('click', e => {
       S.P[k] = el.dataset.v; if (k === 'strategy') S.P.tiers = [...STRATS[el.dataset.v].t];
       savePlan(); recalc(); vPlan($('#v-plan')); return;
     }
+    if (k === 'sdDays' || k === 'sdScope') { S.SD[k] = el.dataset.v; S.SD.h = null; killCharts('c-'); vDup($('#v-dup')); return; }
     if (k === 'view') { S.BK.view = el.dataset.v; S.BK.all = false; renderBasket(); return; }
     if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
     if (k === 'chMode') { S.P.chMode = el.dataset.v; S.P.split = {}; if (S.P.chMode === 'manual' && !S.P.chPick.length && S.cur) S.P.chPick = S.cur.chs.map(c => c.ch); savePlan(); recalc(); vPlan($('#v-plan')); return; }
@@ -1086,6 +1197,7 @@ document.addEventListener('change', e => {
   if (t.id === 'f-h0') { F.h0 = +t.value; if (F.h0 > F.h1) F.h1 = F.h0; applyFilters(); renderDrawer(); return; }
   if (t.id === 'f-h1') { F.h1 = +t.value; if (F.h1 < F.h0) F.h0 = F.h1; applyFilters(); renderDrawer(); return; }
   if (t.id === 'f-min') { F.minTvr = Math.max(0, +t.value || 0); applyFilters(); return; }
+  if (t.id === 'sd-h') { S.SD.h = +t.value; killCharts('c-'); vDup($('#v-dup')); return; }
   if (t.id === 'sf-h') { S.SF.h = +t.value; killCharts('c-'); vExplore($('#v-explore')); return; }
   if (t.dataset.lvl !== undefined) {
     const i = +t.dataset.lvl, L = S.DR.levels.slice(0, i); if (t.value) L.push(t.value);
@@ -1098,7 +1210,7 @@ document.addEventListener('change', e => {
   if (t.dataset && t.dataset.a !== undefined && t.closest('.mx')) {
     S.DUP[dkey(t.dataset.a, t.dataset.b)] = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dup', S.DUP); recalc(); killCharts('c-'); vDup($('#v-dup')); return;
   }
-  if (t.id === 'd-intra') { S.DINTRA = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dintra', S.DINTRA); recalc(); return; }
+  if (t.id === 'd-intra') { S.DINTRA = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dintra', S.DINTRA); recalc(); killCharts('c-'); vDup($('#v-dup')); return; }
 });
 let qTimer, pTimer;
 document.addEventListener('input', e => {
