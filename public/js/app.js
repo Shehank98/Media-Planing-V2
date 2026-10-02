@@ -427,7 +427,7 @@ function vPlan(el) {
       </div>
       <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">budget per channel, filled with spots</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
       <div class="panel"><div class="ph"><h3>Programme basket</h3><span class="s" id="bk-sum"></span></div><div class="pb" id="pl-basket"></div></div>
-      <div class="panel"><div class="ph"><h3>Duplication by time belt</h3><span class="s">same viewers counted twice, per hour of the plan</span><span class="push"><button class="link" data-tab-go="dup">Duplication tab</button></span></div><div class="pb" id="pl-belt"></div></div>
+      <div class="panel"><div class="ph"><h3>Duplication by time belt</h3><span class="s">same viewers counted twice, per hour of the plan</span><span class="push"><button class="link" data-tab-go="dup">Duplication tab</button><button class="btn sm" id="belt-tog" aria-expanded="${S.XP.has('belt')}">${S.XP.has('belt') ? 'Collapse' : 'Expand'}</button></span></div><div class="pb" id="pl-belt"></div></div>
       <div class="panel"><div class="ph"><h3>Weekly flighting</h3><span class="s" id="fl-sub"></span><span class="push">${seg('fv', S, [['weeks', 'By week'], ['days', 'Day plan']])}<button class="btn sm" id="fl-csv">Export schedule</button></span></div><div class="pb" id="pl-flight"></div></div>
       <div class="grid g2">
         <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
@@ -571,14 +571,24 @@ function renderBelts() {
       <div class="bar" title="Different people ${nf(b.net, 1)}% · counted twice ${nf(b.dup, 1)} pts"><i style="width:${(b.net / (b.gross || 1) * 100).toFixed(1)}%;background:var(--accent)"></i><i style="width:${pct.toFixed(1)}%;background:var(--heat)"></i></div>
       <span class="sub">Added up ${nf(b.gross, 1)}% → <b>${nf(b.net, 1)}% different people</b> · <b style="color:var(--heat)">${nf(pct, 0)}% duplicated</b></span>
       ${b.pairs.map(pairLine).join('') || '<span class="sub">No pair above the overlap limit.</span>'}
-      ${(() => { const sg = beltSuggest(b); return `<div class="bsug"><b class="h">How to cut duplication here</b>${sg.length ? sg.map(o => `<div class="bs"><span class="tag">${o.kind}</span><span>${o.html}</span><button class="btn sm" data-belt-act="${esc(JSON.stringify(o.act))}">Apply</button></div>`).join('') : '<span class="sub">This belt is already well mixed: no change adds more different people for the money.</span>'}</div>`; })()}</div>`;
+      ${(() => { const sg = b.sg; return `<div class="bsug"><b class="h">How to cut duplication here</b>${sg.length ? sg.map(o => `<div class="bs"><span class="tag">${o.kind}</span><span>${o.html}</span><button class="btn sm" data-belt-act="${esc(JSON.stringify(o.act))}">Apply</button></div>`).join('') : '<span class="sub">This belt is already well mixed: no change adds more different people for the money.</span>'}</div>`; })()}</div>`;
   };
-  el.innerHTML = `<div class="kpis k4">
+  multi.forEach(b => b.sg = beltSuggest(b));
+  const open = S.XP.has('belt'), tips = multi.reduce((a, b) => a + b.sg.length, 0);
+  const tb = $('#belt-tog'); if (tb) { tb.textContent = open ? 'Collapse' : 'Expand'; tb.setAttribute('aria-expanded', open); }
+  const kpis = `<div class="kpis k4">
       ${kp('Time belts in the plan', belts.length, `${multi.length} with 2+ programmes`)}
       ${kp('Reach added up', nf(G, 1) + '%', 'programmes counted separately')}
       ${kp('Duplicated', nf(G > 0 ? D / G * 100 : 0, 0) + '%', `${nf(D, 1)} pts are the same viewers`)}
       ${kp('High-overlap pairs apart', allP.length ? `${apart} of ${allP.length}` : 'none', `overlap ≥ ${thr}, same hour`, 'hl')}
-    </div>
+    </div>`;
+  if (!open) {
+    // Collapsed: headline numbers and one chip per belt (duplication and number of suggestions).
+    el.innerHTML = kpis + (multi.length ? `<div class="beltchips">${[...multi].sort((a, b) => b.dup / (b.gross || 1) - a.dup / (a.gross || 1)).map(b => { const pc = b.gross > 0 ? b.dup / b.gross * 100 : 0; return `<button class="chip" data-belt-open title="Expand to see this belt"><b>${band(b.h)}</b> · <span style="color:${pc >= 35 ? 'var(--heat)' : 'inherit'}">${nf(pc, 0)}% dup</span>${b.sg.length ? ` · <span class="tag ok">${b.sg.length} tip${b.sg.length > 1 ? 's' : ''}</span>` : ''}</button>`; }).join('')}</div>
+      <p class="hint">${tips ? `<b>${tips} suggestion${tips > 1 ? 's' : ''}</b> to cut duplication. ` : ''}Belts sorted by duplication. <button class="link" data-belt-open>Expand</button> to see each belt's programmes, pairs and suggestions.</p>` : '');
+    return;
+  }
+  el.innerHTML = kpis + `
     ${multi.length ? `<div class="belt" style="margin-top:12px">${multi.map(card).join('')}</div>` : '<p class="muted" style="margin-top:10px">Every time belt has a single programme, so there is no overlap inside a belt.</p>'}
     ${single.length ? `<p class="hint">One programme only (no overlap inside the belt): ${single.map(b => `${band(b.h)} ${sn(b.its[0])}`).join(', ')}.</p>` : ''}
     ${howRead(`the bar is each time belt's reach added up. <b>Teal</b> = different people, <b>orange</b> = the same viewers counted twice (they watch more than one of these programmes on different nights). Click a time belt to see its programme × programme overlap. <b>How to cut duplication here</b> suggests basket changes for that belt: <b>Drop</b> a programme whose viewers the others already reach, <b>Swap</b> one for a programme with less overlap, use <b>fewer channels</b>, or the <b>best mix</b> of programmes for the money. Effects are estimated for the belt; Apply re-runs the whole plan, and removed programmes can be restored under the basket.`)}
@@ -1500,6 +1510,7 @@ document.addEventListener('click', e => {
     savePlan(); recalc(); if (S.TAB === 'plan') updatePlan(); if ($('#detail').classList.contains('on')) renderDetail();
     toast(X.includes(k) ? 'Removed from plan' : 'Restored to plan'); return;
   }
+  if (t.closest('#belt-tog') || t.closest('[data-belt-open]')) { S.XP.has('belt') ? S.XP.delete('belt') : S.XP.add('belt'); renderBelts(); if (!S.XP.has('belt')) $('#pl-belt').closest('.panel').scrollIntoView({ block: 'nearest' }); return; }
   if ((el = t.closest('[data-belt-act]'))) {
     const a = JSON.parse(el.dataset.beltAct), ex = new Set(a.excl || []);
     S.P.excl = [...new Set([...S.P.excl, ...ex])]; S.P.lock = S.P.lock.filter(k => !ex.has(k));
