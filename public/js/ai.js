@@ -16,10 +16,13 @@ export function buildContext(S) {
   const A = S.cur;
   const plan = A ? {
     budgetLKR: Math.round(A.B), budgetCutPct: S.P.cut, channelsInPlan: S.P.nCh, programsPerChannel: S.P.nProg,
-    netReachPct: r2(A.net), grossReachPct: r2(A.gross), duplicationLossPct: r2(A.loss * 100),
+    netReachPct: r2(A.net), reach3plusPct: r2(A.r3), grossReachPct: r2(A.gross), duplicationLossPct: r2(A.loss * 100), budgetUsedLKR: Math.round(A.spent),
+    strategy: S.P.strategy, tiers: A.tiers.map(t => ({ tier: t.t, targetPct: t.target, actualPct: r2(t.actual), programsBought: t.n })), tier1MinTVR: r2(A.thr.t1), tier3BelowTVR: r2(A.thr.t3),
+    maxSpotsPerProgramPerWeek: S.P.capWk, dayparts: A.dps.filter(d => d.present).map(d => ({ daypart: d.d, minPct: d.min, maxPct: r2(d.max), actualPct: r2(d.actual) })),
+    flighting: S.sched ? { weeks: A.W, start: S.sched.start, pacing: S.P.pacing, sameHourRivals: S.P.same, spotsPerWeek: S.sched.weeks.map(w => w.spots) } : null,
     estSpots: A.spots, estGRPs: Math.round(A.grps), costPerRatingPointLKR: S.P.cprp,
     split: A.chs.map(c => ({ channel: c.ch, sharePct: r2(c.w * 100), budgetLKR: Math.round(c.bud) })),
-    basket: A.kept.map(x => ({ program: x.p, channel: x.ch, role: x.role, sharePct: r2(x.k * 100), avgTVR: r2(x.mean), consistency: r2(x.ci), usualHour: hl(x.hour) })),
+    basket: A.kept.map(x => ({ program: x.p, channel: x.ch, tier: x.tier, spots: x.spots, role: x.role, sharePct: r2(x.k * 100), avgTVR: r2(x.mean), consistency: r2(x.ci), usualHour: hl(x.hour) })),
     droppedByCut: A.dropped.map(x => x.p),
     healthChecks: (S.health || []).map(h => h.m.replace(/<[^>]+>/g, ''))
   } : null;
@@ -58,11 +61,11 @@ export function askLocal(q, S, simulate) {
     const pct = Math.min(50, +(m[2] && /\d/.test(m[2]) ? m[2] : m[1]));
     const B = simulate({ cut: pct });
     return {
-      html: `<b>Short answer:</b> net reach moves from ${nf(S.base.net, 1)}% (full budget) to about ${nf(B.net, 1)}% (${nf((B.net / S.base.net - 1) * 100, 0)}%) for a ${pct}% budget cut.` +
-        li([`Keep ${B.kept.length} of ${S.base.kept.length} program slots, protecting the strongest anchors`,
+      html: `<b>Short answer:</b> net reach moves from ${nf(S.base.net, 1)}% (full budget) to about ${nf(B.net, 1)}% for a ${pct}% budget cut, and reach 3+ from ${nf(S.base.r3, 1)}% to ${nf(B.r3, 1)}%.` +
+        li([`Spots fall from ${S.base.spots} to ${B.spots}; the optimiser removes repeat spots first, so frequency drops more than reach`,
           B.dropped.length ? `Drop: ${B.dropped.slice(0, 4).map(x => pn(x.p)).join(', ')}` : 'No slots dropped',
           `New split: ${B.chs.map(c => chName(c.ch) + ' ' + nf(c.w * 100, 0) + '%').join(', ')}`,
-          'Reach falls less than budget because the cut removes the weakest slots first']),
+          'Locked programs and the tier split are kept']),
       action: { cut: pct }
     };
   }

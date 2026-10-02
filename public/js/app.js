@@ -1,7 +1,7 @@
 import {
   DAYS, DS, DIMS, DPS, daypart, esc, nf, ni, hl, band, chName, pn, fmtDate, dayDiff, lkr,
   parseRows, grp, avgT, avgR, avgS, ciOf, steadiness, summarize, mkGetD, dkey, netReach, uni,
-  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV
+  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV, STRATS, buildSchedule
 } from './engine.js';
 import { makeDemoRows } from './demo.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './store.js';
@@ -12,7 +12,12 @@ const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 /* ---------- state ---------- */
-const DEFAULT_P = { budget: 10000000, nCh: 4, nProg: 3, cut: 0, cprp: 25000, spotLen: 30, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [] };
+const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d.getDay()) % 7 || 7)); return d.toISOString().slice(0, 10); };
+const DEFAULT_P = {
+  budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [],
+  strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
+  weeks: 4, start: nextMonday(), pacing: 'even', same: 'roadblock', repQ: 40
+};
 const S = {
   ROWS: [], F: [], CH: [], CATS: [], SPAN: ['', ''], HRS: [0, 23], meta: null,
   FS: null, TAB: 'overview', DT: 'upload',
@@ -24,6 +29,7 @@ const S = {
   DR: { levels: ['ch', 'cat', 'p'], open: new Set() },
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
+  fv: 'weeks', sched: null,
   chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
@@ -87,6 +93,9 @@ function recalc() {
   if (!S.plan || !S.plan.items.length) { S.base = S.cur = null; S.health = []; return; }
   S.base = scen(S.plan, 1, S.P, getD, S.DINTRA);
   S.cur = S.P.cut > 0 ? scen(S.plan, 1 - S.P.cut / 100, S.P, getD, S.DINTRA) : S.base;
+  if (S.P.cut > 0) { const ks = new Set(S.cur.kept.map(x => x.key)); S.cur.dropped = S.base.kept.filter(x => !ks.has(x.key)); }
+  if (!S.cur.kept.length) { S.base = S.cur = null; S.health = []; S.sched = null; return; }
+  S.sched = buildSchedule(S.cur, S.P);
   S.health = healthChecks(S.F, S.plan, S.cur, S.P, getD);
 }
 function simulate(patch, fsPatch) {
@@ -321,51 +330,80 @@ function vDrill(el) {
 }
 
 /* ---------- Planner ---------- */
+const TIER_NAMES = { 1: 'Peak impact', 2: 'Efficiency anchors', 3: 'Frequency builders' };
+const TIER_COL = { 1: 'var(--c1)', 2: 'var(--c2)', 3: 'var(--c3)' };
+const tierTag = t => `<span class="tag tier t${t}">T${t}</span>`;
 function vPlan(el) {
   const P = S.P, f = S.FS;
   const chOn = S.CH.filter(c => f.ch.has(c));
+  const num = (k, o = {}) => `<input type="number" data-p="${k}" value="${P[k]}" ${o.min != null ? `min="${o.min}"` : ''} ${o.max != null ? `max="${o.max}"` : ''} step="${o.step || 1}">`;
+  const strat = STRATS[P.strategy] ? P.strategy : '';
   el.innerHTML = `
-  <div class="vhead"><div><h2>Build your plan</h2><p>Recommended split and basket from the filtered data. Lock or exclude programs, adjust the split, then save scenarios.</p></div>
+  <div class="vhead"><div><h2>Build your plan</h2><p>Spots are bought one at a time where they add the most new reach per rupee, within your tier split, caps and daypart limits.</p></div>
     <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn" data-deck>Export deck (PPTX)</button><button class="btn pri" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button></span></div>
   <div class="planbar" id="pl-bar"></div>
   <div class="grid g-plan">
     <div class="col">
       <div class="panel"><div class="ph"><h3>Your brief</h3><span class="push"><button class="link" data-open="filters">Edit</button></span></div><div class="pb">
-        <table><tbody>
+        <table class="brief"><tbody>
           <tr><td class="l muted">Channels</td><td>${f.ch.size === S.CH.length ? 'All ' + S.CH.length : f.ch.size + ' of ' + S.CH.length}</td></tr>
           <tr><td class="l muted">Categories</td><td>${f.cat.size === S.CATS.length ? 'All' : f.cat.size <= 2 ? [...f.cat].map(pn).join(', ') : f.cat.size + ' selected'}</td></tr>
           <tr><td class="l muted">Days</td><td>${f.day.size === 7 ? 'All week' : DAYS.filter(d => f.day.has(d)).map(d => d.slice(0, 3)).join(', ')}</td></tr>
           <tr><td class="l muted">Time band</td><td>${hl(f.h0)} – ${hl((f.h1 + 1) % 24)}</td></tr>
-          <tr><td class="l muted">Period</td><td>${fmtDate(f.from)} – ${fmtDate(f.to)}</td></tr>
+          <tr><td class="l muted">Ratings period</td><td>${fmtDate(f.from)} – ${fmtDate(f.to)}</td></tr>
         </tbody></table>
-        <div class="presets"><button class="btn sm" data-preset="prime">Prime 6–10 PM</button><button class="btn sm" data-preset="wd">Weekdays</button><button class="btn sm" data-preset="we">Weekend</button></div>
+        <div class="presets"><button class="btn sm" data-preset="prime">Prime 6–10 PM</button><button class="btn sm" data-preset="allday">All day</button><button class="btn sm" data-preset="wd">Weekdays</button><button class="btn sm" data-preset="we">Weekend</button></div>
       </div></div>
-      <div class="panel"><div class="ph"><h3>Plan settings</h3></div><div class="pb">
-        <label class="fld"><span>Budget (LKR)</span><input type="number" id="p-bud" min="0" step="500000" value="${P.budget}"></label>
-        <div class="two"><label class="fld"><span>Cost per rating point</span><input type="number" id="p-cprp" min="0" step="1000" value="${P.cprp}" title="LKR for one TVR point on a 30 sec spot. Used to estimate spots and GRPs."></label>
-        <label class="fld"><span>Spot length</span><select id="p-len">${[10, 15, 20, 30, 45, 60].map(s => `<option ${s === P.spotLen ? 'selected' : ''} value="${s}">${s} sec</option>`).join('')}</select></label></div>
-        <label class="fld"><span>Target net reach % <b>${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="60" step="1" value="${P.target}"></label>
-        <div class="fld"><span>Channel selection</span>${seg('chMode', P, [['auto', 'Auto (best N)'], ['manual', 'Pick channels']])}</div>
-        ${P.chMode === 'auto' ? `<label class="fld"><span>Channels in plan <b id="l-nch">${P.nCh}</b></span><input type="range" id="p-nch" min="1" max="${Math.max(1, chOn.length)}" value="${Math.min(P.nCh, Math.max(1, chOn.length))}"></label>`
+      <div class="panel settings"><div class="ph"><h3>Plan settings</h3><span class="push"><button class="link" id="p-reset">Reset</button></span></div><div class="pb">
+        <details open><summary>Budget and cost</summary>
+          <label class="fld"><span>Budget (LKR)</span>${num('budget', { min: 0, step: 500000 })}</label>
+          <div class="two"><label class="fld"><span>Cost per rating point</span>${num('cprp', { min: 1000, step: 1000 })}</label>
+          <label class="fld"><span>Spot length</span><select data-p="spotLen">${[10, 15, 20, 30, 45, 60].map(s => `<option ${s === P.spotLen ? 'selected' : ''} value="${s}">${s} sec</option>`).join('')}</select></label></div>
+          <label class="fld"><span>Minimum spot rate (LKR)</span>${num('minRate', { min: 0, step: 1000 })}</label>
+          <label class="fld"><span>Budget change <b id="l-cut">${P.cut ? '−' + P.cut + '%' : 'none'}</b></span><input type="range" id="p-cut" min="0" max="50" step="5" value="${P.cut}"></label>
+          <label class="fld"><span>Target net reach <b id="l-tgt">${P.target ? P.target + '%' : 'none'}</b></span><input type="range" id="p-tgt" min="0" max="90" step="1" value="${P.target}"></label>
+        </details>
+        <details open><summary>Strategy and tiers</summary>
+          <div class="fld">${seg('strategy', { strategy: strat }, Object.entries(STRATS).map(([k, v]) => [k, v.label]))}${strat ? '' : ' <span class="tag">Custom</span>'}</div>
+          <div class="fld"><span>Tier budget split (%) <b id="l-tsum">${P.tiers.reduce((a, b) => a + (+b || 0), 0)}%</b></span>
+            <div class="three">${[0, 1, 2].map(i => `<label><span class="sub">Tier ${i + 1}</span><input type="number" min="0" max="100" data-pa="tiers" data-i="${i}" value="${P.tiers[i]}"></label>`).join('')}</div></div>
+          <div class="two"><label class="fld"><span>Tier 1 from percentile</span>${num('tp1', { min: 50, max: 99 })}</label><label class="fld"><span>Tier 3 below percentile</span>${num('tp3', { min: 1, max: 50 })}</label></div>
+          <label class="fld"><span>Ignore programs below TVR</span>${num('minTvrPlan', { min: 0, step: .1 })}</label>
+          <p class="hint" id="l-thr"></p>
+        </details>
+        <details><summary>Channels and programs</summary>
+          <div class="fld">${seg('chMode', P, [['auto', 'Auto (best N)'], ['manual', 'Pick channels']])}</div>
+          ${P.chMode === 'auto' ? `<label class="fld"><span>Channels in plan <b id="l-nch">${P.nCh}</b></span><input type="range" id="p-nch" min="1" max="${Math.max(1, chOn.length)}" value="${Math.min(P.nCh, Math.max(1, chOn.length))}"></label>`
       : `<div class="fld"><div class="chips">${chOn.map(c => `<button class="chip ${P.chPick.includes(c) ? 'on' : ''}" data-pick-ch="${esc(c)}">${esc(chName(c))}</button>`).join('')}</div></div>`}
-        <label class="fld"><span>Programs per channel <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="8" value="${P.nProg}"></label>
-        <label class="fld" style="margin:0"><span>Budget change <b id="l-cut">${P.cut ? '−' + P.cut + '%' : 'none'}</b></span><input type="range" id="p-cut" min="0" max="50" step="5" value="${P.cut}"></label>
-        <p class="hint">Weight = 60% average reach + 40% average TVR. Programs ranked by TVR (60%) and steadiness (40%).</p>
-        <button class="link" id="p-reset" style="margin-top:6px">Reset plan settings</button>
+          <label class="fld"><span>Programs per channel per tier <b id="l-np">${P.nProg}</b></span><input type="range" id="p-np" min="1" max="5" value="${P.nProg}"></label>
+        </details>
+        <details><summary>Caps and dayparts</summary>
+          <label class="fld"><span>Max spots per program per week <b id="l-cap">${P.capWk}</b></span><input type="range" id="p-cap" min="1" max="10" value="${P.capWk}"></label>
+          <table class="dpt"><thead><tr><th>Daypart</th><th>Min %</th><th>Max %</th></tr></thead><tbody>${DPS.map((d, i) => `<tr><td>${esc(d)}</td><td><input type="number" min="0" max="100" data-pa="dpMin" data-i="${i}" value="${P.dpMin[i]}"></td><td><input type="number" min="0" max="100" data-pa="dpMax" data-i="${i}" value="${P.dpMax[i]}"></td></tr>`).join('')}</tbody></table>
+          <p class="hint">Share of spend by the program's usual start hour. Limits for dayparts outside the brief are ignored.</p>
+        </details>
+        <details><summary>Flighting</summary>
+          <div class="two"><label class="fld"><span>Flight start</span><input type="date" data-p="start" value="${P.start}"></label><label class="fld"><span>Weeks</span>${num('weeks', { min: 1, max: 13 })}</label></div>
+          <div class="fld"><span>Pacing</span>${seg('pacing', P, [['even', 'Even (drip)'], ['burst', 'Burst'], ['pulse', 'Pulse']])}</div>
+          <div class="fld"><span>Same-hour spots on rival channels</span>${seg('same', P, [['roadblock', 'Roadblock'], ['stagger', 'Stagger']])}</div>
+          <p class="hint">${P.same === 'roadblock' ? 'Roadblock: rival channels at the same hour on the same night. One viewer cannot watch both, so this reaches more different people.' : 'Stagger: rival same-hour spots on different nights. The same viewers see the ad more often (frequency).'}</p>
+        </details>
       </div></div>
     </div>
     <div class="col">
       <div class="grid g2">
-        <div class="panel"><div class="ph"><h3>Estimated net reach</h3></div><div class="pb" id="pl-net"></div></div>
+        <div class="panel"><div class="ph"><h3>Estimated reach</h3></div><div class="pb" id="pl-net"></div></div>
         <div class="panel"><div class="ph"><h3>Plan health check</h3></div><div class="pb"><ul class="health" id="pl-health"></ul></div></div>
       </div>
-      <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">how the budget is divided</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done adjusting' : 'Adjust split'}</button></span></div><div class="pb" id="pl-split"></div></div>
-      <div class="panel"><div class="ph"><h3>Program basket</h3><span class="s">sorted by share of the total plan · Lock keeps a program, Remove takes it out</span></div><div class="pb" id="pl-basket"></div></div>
+      <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
+      <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">result of the spot-by-spot buy</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
+      <div class="panel"><div class="ph"><h3>Program basket</h3><span class="s">Lock forces a buy, Remove takes a program out</span></div><div class="pb" id="pl-basket"></div></div>
+      <div class="panel"><div class="ph"><h3>Weekly flighting</h3><span class="s" id="fl-sub"></span><span class="push">${seg('fv', S, [['weeks', 'By week'], ['days', 'Day plan']])}<button class="btn sm" id="fl-csv">Export schedule</button></span></div><div class="pb" id="pl-flight"></div></div>
     </div>
     <div class="col">
       <div class="panel"><div class="ph"><h3>Planner memo</h3><span class="s">auto-written from the numbers</span><span class="push"><button class="link" id="pl-copy">Copy</button></span></div><div class="pb memo" id="pl-memo"></div></div>
       <div class="panel"><div class="ph"><h3>Reach build</h3><span class="s">net reach as channels are added</span></div><div class="pb"><div class="chart sm"><canvas id="c-build"></canvas></div></div></div>
-      <div class="panel"><div class="ph"><h3>Competing slots</h3><span class="s">same hour, plan channels</span></div><div class="pb" id="pl-comp" style="max-height:300px;overflow:auto"></div></div>
+      <div class="panel"><div class="ph"><h3>Competing slots</h3><span class="s">${P.same === 'roadblock' ? 'roadblocked on the same nights' : 'staggered across nights'}</span></div><div class="pb" id="pl-comp" style="max-height:300px;overflow:auto"></div></div>
     </div>
   </div>
   <div class="nextbar"><span>Happy with the basket? Save it and stress-test it against budget changes.</span><button class="btn pri" data-tab-go="scen">Next: Scenarios →</button></div>`;
@@ -374,38 +412,47 @@ function vPlan(el) {
 function updatePlan() {
   if (!$('#pl-net')) return;
   const A = S.cur, base = S.base, P = S.P;
-  if (!A) {
-    $('#pl-bar').innerHTML = ''; $('#pl-net').innerHTML = '<p class="muted">No programs left to plan. Add channels or un-exclude programs.</p>';
-    ['#pl-health', '#pl-split', '#pl-basket', '#pl-memo', '#pl-comp'].forEach(s => $(s).innerHTML = ''); return;
+  if (S.plan && S.plan.thr) $('#l-thr').textContent = `In this brief: Tier 1 averages ≥ ${nf(S.plan.thr.t1, 2)} TVR, Tier 3 < ${nf(S.plan.thr.t3, 2)} TVR. ${S.plan.items.length} candidate programs.`;
+  if (!A || !A.kept.length) {
+    $('#pl-bar').innerHTML = ''; $('#pl-net').innerHTML = '<p class="muted">No spots could be bought. Add channels, lower the minimum TVR, or un-exclude programs.</p>';
+    ['#pl-health', '#pl-split', '#pl-basket', '#pl-memo', '#pl-comp', '#pl-tier', '#pl-flight'].forEach(s => $(s).innerHTML = ''); return;
   }
   const warn = S.health.filter(h => h.t === 'wa').length;
-  const m = (l, v, cls = '') => `<div class="m ${cls}"><small>${l}</small><b>${v}</b></div>`;
-  $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', 'hl') + m('Gross reach', nf(A.gross, 1) + '%') + m('Budget', lkr(A.B)) + m('Channels', A.chs.length) + m('Programs', A.kept.length) +
-    (P.cprp > 0 ? m('Est. spots', ni(A.spots)) + m('Est. GRPs', ni(A.grps)) + m('Avg frequency', nf(A.freq, 1) + 'x') : '') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK', '');
-  const cmp = (a, b) => P.cut > 0 ? ` <span class="muted" style="font-size:12px">(full budget ${b})</span>` : '';
-  $('#pl-net').innerHTML = `<div class="bigline"><b>${nf(A.net, 1)}%</b><span class="muted">of the TV audience, reached at least once${cmp(A.net, nf(base.net, 1) + '%')}</span></div>
+  const m = (l, v, cls = '', t = '') => `<div class="m ${cls}" title="${t}"><small>${l}</small><b>${v}</b></div>`;
+  $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', 'hl', 'Reached at least once') + m('Reach 3+', nf(A.r3, 1) + '%', '', 'Reached at least 3 times') + m('Budget used', lkr(A.spent)) +
+    m('Channels', A.chs.length) + m('Programs', A.kept.length) + m('Spots', ni(A.spots)) + m('GRPs', ni(A.grps)) + m('Avg frequency', nf(A.freq, 1) + 'x') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK');
+  const full = P.cut > 0 ? ` <span class="muted" style="font-size:12px">(full budget ${nf(base.net, 1)}%)</span>` : '';
+  $('#pl-net').innerHTML = `<div class="bigline"><b>${nf(A.net, 1)}%</b><span class="muted">reached at least once${full}</span></div>
     <div class="flow"><div><b>${nf(A.gross, 1)}%</b><small>Gross reach</small></div><i>−</i><div><b>${nf(A.gross - A.net, 1)} pts</b><small>Same viewers</small></div><i>=</i><div><b style="color:var(--accent)">${nf(A.net, 1)}%</b><small>Net reach</small></div></div>
-    <p class="hint">Net reach per LKR 1M: ${nf(A.eff, 2)} pts. Duplication factors are assumptions (see Duplication tab) because the file has no respondent-level data.${P.target ? ` Target ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
+    <div class="flow" style="grid-template-columns:1fr 1fr 1fr"><div><b>${nf(A.r3, 1)}%</b><small>Reach 3+</small></div><div><b>${nf(A.freq, 1)}x</b><small>Avg frequency</small></div><div><b>${nf(A.eff, 2)}</b><small>Net pts per LKR 1M</small></div></div>
+    <p class="hint">Reach 3+ = reached at least three times, the usual effective-frequency goal. Duplication and repeat-spot reach are planning assumptions (Duplication tab).${P.target ? ` Target ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
   $('#pl-health').innerHTML = S.health.map(h => `<li><span class="ic ${h.t}">${ICON[h.t]}</span><span>${h.m}</span></li>`).join('');
+  // Tier pyramid
+  const thr = A.thr || { t1: 0, t3: 0 };
+  const band_ = t => t === 1 ? `avg TVR ≥ ${nf(thr.t1, 2)}` : t === 3 ? `avg TVR < ${nf(thr.t3, 2)}` : `${nf(thr.t3, 2)} – ${nf(thr.t1, 2)}`;
+  $('#pl-tier').innerHTML = `<div class="tiers">${A.tiers.map(t => `<div class="trow"><div><b>Tier ${t.t}</b> · ${TIER_NAMES[t.t]}<span class="sub">${band_(t.t)} · ${t.n} of ${t.avail} programs bought</span></div>
+      <div class="tbars"><div class="tb"><i style="width:${Math.min(100, t.target)}%;background:color-mix(in srgb,${TIER_COL[t.t]} 30%,var(--panel))"></i><span>target ${nf(t.target, 0)}%</span></div><div class="tb"><i style="width:${Math.min(100, t.actual)}%;background:${TIER_COL[t.t]}"></i><span><b>actual ${nf(t.actual, 0)}%</b></span></div></div></div>`).join('')}</div>
+    <div class="tw" style="margin-top:10px"><table><thead><tr><th>Daypart</th><th>Limit</th><th>Actual</th><th></th></tr></thead><tbody>${A.dps.filter(d => d.present).map(d => { const bad = d.actual > d.max + .5 || d.actual + .5 < d.min; return `<tr><td>${esc(d.d)}</td><td>${nf(d.min, 0)}–${nf(d.max, 0)}%</td><td><b>${nf(d.actual, 0)}%</b></td><td style="width:40%"><div class="mini-bar" style="justify-content:flex-start"><div class="tr" style="width:100%"><div class="fl" style="width:${Math.min(100, d.actual)}%;background:${bad ? 'var(--bad)' : 'var(--accent)'}"></div></div></div></td></tr>`; }).join('')}</tbody></table></div>`;
   // Split
   $('#pl-split').innerHTML = `<div class="stack">${A.chs.map(c => `<div style="width:${(c.w * 100).toFixed(2)}%;background:${cv(c.ch)}" title="${esc(chName(c.ch))} ${nf(c.w * 100, 1)}%">${c.w > .08 ? esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0) + '%' : ''}</div>`).join('')}</div>
-   <div class="tw"><table><thead><tr><th>Channel</th><th>Share</th><th>Budget</th><th>Avg TVR</th><th>Avg reach</th><th>Programs</th>${P.cprp > 0 ? '<th>Spots</th>' : ''}<th class="l">Why this weight</th></tr></thead><tbody>${A.chs.map(c => {
+   <div class="tw"><table><thead><tr><th>Channel</th><th>Share</th><th>Budget</th><th>Avg TVR</th><th>Avg reach</th><th>Programs</th><th>Spots</th><th>Reach</th><th class="l">Why this weight</th></tr></thead><tbody>${A.chs.map(c => {
     const st = S.plan.cs.find(x => x.ch === c.ch), sel = S.plan.sel.find(x => x.ch === c.ch);
     const rev = c.progs.some(x => x.role === 'review') && c.progs.length === 1;
-    const why = sel && sel.manual ? 'Manual share' : st === S.plan.cs[0] ? 'Highest reach per airing' : c.progs.length === 1 ? (rev ? 'Risk: all spend on one volatile program' : 'Single program: ' + pn(c.progs[0].p)) : c.progs.some(x => x.role === 'anchor') ? 'Carries anchor ' + pn(c.progs.find(x => x.role === 'anchor').p) : 'Adds incremental reach';
-    return `<tr class="${rev ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.w * 100).toFixed(0)}">` : `<b>${nf(c.w * 100, 1)}%</b>`}</td><td>${lkr(c.bud).replace('LKR ', '')}</td><td>${nf(st.tvr, 2)}</td><td>${nf(st.reach, 2)}%</td><td>${c.progs.length}</td>${P.cprp > 0 ? `<td>${ni(c.spots)}</td>` : ''}<td class="l">${esc(why)}</td></tr>`;
-  }).join('')}</tbody></table></div>${S.editSplit ? `<p class="hint">Type a share for any channel; the rest are rebalanced automatically. <button class="link" id="pl-split-reset">Back to recommended split</button></p>` : ''}`;
+    const t1 = c.progs.filter(x => x.tier === 1).length;
+    const why = sel && sel.manual ? 'Fixed share' : c === A.chs[0] ? 'Most new reach per rupee' : c.progs.length === 1 ? (rev ? 'Risk: all spend on one volatile program' : 'Single program: ' + pn(c.progs[0].p)) : t1 ? `${t1} Tier 1 program${t1 > 1 ? 's' : ''}, adds reach beyond ${chName(A.chs[0].ch)}` : 'Cheaper frequency and incremental reach';
+    return `<tr class="${rev ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.w * 100).toFixed(0)}">` : `<b>${nf(c.w * 100, 1)}%</b>`}</td><td>${lkr(c.bud).replace('LKR ', '')}</td><td>${nf(st.tvr, 2)}</td><td>${nf(st.reach, 2)}%</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
+  }).join('')}</tbody></table></div>${S.editSplit ? `<p class="hint">Type a share to fix a channel; the optimiser fills the rest. <button class="link" id="pl-split-reset">Clear fixed shares</button></p>` : ''}`;
   // Basket
   const mxk = Math.max(...A.kept.map(x => x.k), .01);
-  const row = (x, drop) => `<tr class="${drop ? 'drop' : x.role === 'review' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink);font-weight:600;text-align:left" ${xa({ ch: x.ch, p: x.p })}><div class="pn" title="${esc(pn(x.p))}">${esc(pn(x.p))}</div></button><span class="sub">${dot(x.ch)}${esc(chName(x.ch))} · ${esc(pn(x.cat))}</span></td><td>${hl(x.hour)}</td><td>${nf(x.mean, 2)}</td><td>${nf(x.rp, 1)}%</td><td class="l">${stdTag(x.ci, x.n)}</td><td>${drop ? '<span class="tag">dropped by cut</span>' : `<div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><b>${nf(x.k * 100, 1)}%</b></div>`}</td><td>${drop ? '' : lkr(x.bud).replace('LKR ', '')}</td>${P.cprp > 0 ? `<td>${drop ? '' : ni(x.spots)}</td>` : ''}<td class="l">${roleTag(x.role)}</td><td><button class="ib ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Always keep this program'}">${x.locked ? 'Locked' : 'Lock'}</button><button class="ib x" data-excl="${esc(x.key)}" title="Remove from plan">Remove</button></td></tr>`;
+  const row = (x, drop) => `<tr class="${drop ? 'drop' : x.role === 'review' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink);font-weight:600;text-align:left" ${xa({ ch: x.ch, p: x.p })}><div class="pn" title="${esc(pn(x.p))}">${esc(pn(x.p))}</div></button><span class="sub">${dot(x.ch)}${esc(chName(x.ch))} · ${esc(pn(x.cat))}</span></td><td>${tierTag(x.tier)}</td><td>${hl(x.hour)}</td><td>${nf(x.mean, 2)}</td><td>${nf(x.rp, 1)}%</td><td class="l">${stdTag(x.ci, x.n)}</td><td>${drop ? '<span class="tag">dropped by cut</span>' : `<div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><b>${nf(x.k * 100, 1)}%</b></div>`}</td><td>${drop ? '' : lkr(x.bud).replace('LKR ', '')}</td><td>${drop ? '' : ni(x.spots) + (x.atCap ? ' <span class="tag" title="At the weekly spot cap">cap</span>' : '')}</td><td class="l">${roleTag(x.role)}</td><td><button class="ib ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Always buy this program'}">${x.locked ? 'Locked' : 'Lock'}</button><button class="ib x" data-excl="${esc(x.key)}" title="Remove from plan">Remove</button></td></tr>`;
   const ex = S.P.excl;
-  $('#pl-basket').innerHTML = `<div class="tw"><table><thead><tr><th>Program</th><th>Slot</th><th>Avg TVR</th><th>Reach</th><th class="l">Steadiness</th><th>Share of plan</th><th>LKR</th>${P.cprp > 0 ? '<th>Spots</th>' : ''}<th class="l">Role</th><th></th></tr></thead><tbody>${A.kept.map(x => row(x, false)).join('')}${A.dropped.map(x => row(x, true)).join('')}</tbody></table></div>
+  $('#pl-basket').innerHTML = `<div class="tw"><table><thead><tr><th>Program</th><th>Tier</th><th>Slot</th><th>Avg TVR</th><th>Reach</th><th class="l">Steadiness</th><th>Share of spend</th><th>LKR</th><th>Spots</th><th class="l">Role</th><th></th></tr></thead><tbody>${A.kept.map(x => row(x, false)).join('')}${(A.dropped || []).map(x => row(x, true)).join('')}</tbody></table></div>
     ${ex.length ? `<p class="hint">Removed: ${ex.map(k => `<span class="tag">${esc(pn(k.split('||')[1]))} <button class="link" data-unexcl="${esc(k)}">restore</button></span>`).join(' ')}</p>` : ''}
-    <p class="hint">Steadiness = mean TVR ÷ standard deviation. 7+ very steady, 5–7 steady, under 3 volatile. Roles: Anchor = top rated and steady, Review = volatile.</p>`;
+    <p class="hint">Steadiness = mean TVR ÷ standard deviation (7+ very steady, under 3 volatile). Cost per spot = max(minimum rate, CPRP × TVR × length/30).</p>`;
+  renderFlight();
   $('#pl-memo').innerHTML = memo(A, base);
   const cp = competing(S.F, A.chs.map(c => c.ch), 8);
   $('#pl-comp').innerHTML = cp.length ? cp.map(o => `<div class="flag"><b>${band(o.h)}</b>${o.l.slice(0, 4).map(x => `<span class="sub">${dot(x.ch)}${esc(chName(x.ch))}: ${esc(pn(x.p))}, TVR ${nf(x.m, 1)}</span>`).join('')}</div>`).join('') : '<p class="muted">No hour has two plan channels airing programs.</p>';
-  // Reach build curve
   const n = Math.min(S.plan.cs.length, 9), pts = [];
   for (let k = 1; k <= n; k++) { const r = simulate({ chMode: 'auto', nCh: k, split: {} }); pts.push(r ? +r.net.toFixed(1) : 0); }
   mkChart('c-build', {
@@ -413,21 +460,51 @@ function updatePlan() {
     options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.raw}% net reach with top ${c.dataIndex + 1} channel${c.dataIndex ? 's' : ''}` } } }, scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } }
   });
 }
+function renderFlight() {
+  const A = S.cur, Sc = S.sched, P = S.P, el = $('#pl-flight');
+  if (!el || !Sc) return;
+  const pl = { even: 'even (drip)', burst: 'burst, front-loaded', pulse: 'pulse, on/off weeks' }[P.pacing];
+  $('#fl-sub').textContent = `${A.W} weeks from ${fmtDate(Sc.start)} · ${pl} · max ${P.capWk}/week per program`;
+  const wkDate = w => { const d = new Date(new Date(Sc.start + 'T12:00:00').getTime() + w * 7 * 864e5); return fmtDate(d.toISOString().slice(0, 10)).slice(0, 6); };
+  if (S.fv === 'days') {
+    const rows = Sc.rows;
+    el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th>Spots</th><th>Cost</th><th>GRPs</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td><td>${nf(r.grps, 1)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="hint">${Sc.clashes} night${Sc.clashes === 1 ? ' has' : 's have'} rival channels in the same hour (${P.same === 'roadblock' ? 'roadblock, by design' : 'kept low by staggering'}). Days follow each program's air days in the data.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="chart sm"><canvas id="c-flight"></canvas></div>
+    <div class="tw" style="max-height:360px;overflow:auto;margin-top:10px"><table><thead><tr><th>Program</th><th>Tier</th>${Sc.weeks.map((_, i) => `<th>W${i + 1}<span class="sub">${wkDate(i)}</span></th>`).join('')}<th>Total</th></tr></thead><tbody>
+    ${Sc.grid.map(g => `<tr><td><div class="pn">${esc(pn(g.x.p))}</div><span class="sub">${dot(g.x.ch)}${esc(chName(g.x.ch))} · ${hl(g.x.hour)}</span></td><td>${tierTag(g.x.tier)}</td>${g.alloc.map(n => `<td style="${n ? '' : 'color:var(--muted)'}">${n || '·'}</td>`).join('')}<td><b>${g.x.spots}</b></td></tr>`).join('')}
+    <tr><td><b>Spots</b></td><td></td>${Sc.weeks.map(w => `<td><b>${w.spots}</b></td>`).join('')}<td><b>${A.spots}</b></td></tr>
+    <tr><td><b>Budget</b></td><td></td>${Sc.weeks.map(w => `<td>${lkr(w.bud).replace('LKR ', '')}</td>`).join('')}<td><b>${lkr(A.spent).replace('LKR ', '')}</b></td></tr>
+    <tr><td><b>GRPs</b></td><td></td>${Sc.weeks.map(w => `<td>${ni(w.grps)}</td>`).join('')}<td><b>${ni(A.grps)}</b></td></tr></tbody></table></div>`;
+  const chs = A.chs.map(c => c.ch);
+  mkChart('c-flight', {
+    type: 'bar', data: { labels: Sc.weeks.map((_, i) => 'W' + (i + 1) + ' ' + wkDate(i)), datasets: chs.map(ch => ({ label: chName(ch), data: Sc.weeks.map(w => w.byCh[ch] || 0), backgroundColor: cc(ch), borderRadius: 2 })) },
+    options: { plugins: { legend: { position: 'bottom', labels: { boxWidth: 10 } }, tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw} spots` } } }, scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, title: { display: true, text: 'Spots' } } } }
+  });
+}
+function scheduleCSV() {
+  const r = S.sched.rows;
+  return toCSV(['Week', 'Date', 'Day', 'Time band', 'Channel', 'Program', 'Tier', 'Spots', 'Spot length (sec)', 'Cost LKR', 'Est. GRPs'],
+    r.map(x => [x.week, x.date, x.day, band(x.hour), chName(x.ch), pn(x.p), 'Tier ' + x.tier, x.spots, S.P.spotLen, Math.round(x.cost), x.grps.toFixed(1)]));
+}
 function memo(A, base) {
   const L = [], P = S.P;
-  L.push(`<p><b>Recommended split:</b> ${A.chs.map(c => `${esc(chName(c.ch))} ${nf(c.w * 100, 0)}%`).join(', ')} of ${lkr(A.B)}.</p>`);
+  L.push(`<p><b>Recommended split:</b> ${A.chs.map(c => `${esc(chName(c.ch))} ${nf(c.w * 100, 0)}%`).join(', ')} of ${lkr(A.spent)}.</p>`);
+  const sl = STRATS[P.strategy] ? STRATS[P.strategy].label : 'Custom';
+  L.push(`<p><b>Strategy:</b> ${sl} pyramid. ${A.tiers.map(t => `Tier ${t.t} ${nf(t.actual, 0)}% (target ${nf(t.target, 0)}%)`).join(', ')}. Tier 1 programs average ${nf(A.thr.t1, 1)}+ TVR.</p>`);
   const anc = A.kept.filter(x => x.role === 'anchor').slice(0, 3);
-  if (anc.length) L.push(`<p><b>Anchors:</b> ${anc.map(x => `${esc(pn(x.p))} on ${esc(chName(x.ch))} (avg TVR ${nf(x.mean, 1)}, steadiness ${nf(x.ci, 1)} over ${x.n} airings)`).join('; ')}.</p>`);
+  if (anc.length) L.push(`<p><b>Anchors:</b> ${anc.map(x => `${esc(pn(x.p))} on ${esc(chName(x.ch))} (TVR ${nf(x.mean, 1)}, ${x.spots} spots)`).join('; ')}.</p>`);
   if (A.chs.length >= 2) {
-    const a = A.chs[0], b = A.chs[1], d = getD(a.ch, b.ch), lift = uni(a.R, b.R, d) - a.R;
-    L.push(`<p><b>Duplication:</b> ${esc(chName(a.ch))} and ${esc(chName(b.ch))} share about ${nf(d * 100, 0)}% of viewers in this model, so ${esc(chName(b.ch))} adds ${nf(lift, 1)} points of net reach, not ${nf(b.R, 1)}.</p>`);
+    const a = A.chs[0], b = A.chs[1], d = getD(a.ch, b.ch);
+    L.push(`<p><b>Duplication:</b> ${esc(chName(a.ch))} and ${esc(chName(b.ch))} share about ${nf(d * 100, 0)}% of viewers in this model; ${nf(A.loss * 100, 0)}% of gross reach is overlap.</p>`);
   }
-  const days = [...grp(S.F, r => r.day).values()].sort((a, b) => avgR(b) - avgR(a)).slice(0, 3);
-  if (days.length > 1) L.push(`<p><b>Best days:</b> ${days.map(d => d.k.slice(0, 3)).join(', ')} by mean reach.</p>`);
-  if (P.cut > 0) L.push(`<p><b>Budget cut of ${P.cut}%:</b> keep ${A.kept.length} of ${base.kept.length} slots; net reach moves from ${nf(base.net, 1)}% to ${nf(A.net, 1)}% (${nf((A.net / base.net - 1) * 100, 0)}%).</p>`);
-  if (P.cprp > 0) L.push(`<p><b>Delivery:</b> about ${ni(A.spots)} spots of ${P.spotLen} sec, ${ni(A.grps)} GRPs, average frequency ${nf(A.freq, 1)}x at LKR ${ni(P.cprp)} per rating point.</p>`);
+  L.push(`<p><b>Delivery:</b> ${ni(A.spots)} spots of ${P.spotLen} sec, ${ni(A.grps)} GRPs, net reach ${nf(A.net, 1)}%, reach 3+ ${nf(A.r3, 1)}%, average frequency ${nf(A.freq, 1)}x.</p>`);
+  if (S.sched) L.push(`<p><b>Flighting:</b> ${A.W} weeks from ${fmtDate(S.sched.start)}, ${P.pacing} pacing (${S.sched.weeks.map(w => w.spots).join(' / ')} spots per week), max ${P.capWk} spots per program per week. Rival same-hour spots are ${P.same === 'roadblock' ? 'roadblocked on the same nights for reach' : 'staggered across nights for frequency'}.</p>`);
+  if (P.cut > 0) L.push(`<p><b>Budget cut of ${P.cut}%:</b> net reach ${nf(base.net, 1)}% → ${nf(A.net, 1)}%, reach 3+ ${nf(base.r3, 1)}% → ${nf(A.r3, 1)}%. The cut removes repeat spots first, so frequency falls faster than reach.</p>`);
   const rv = A.kept.filter(x => x.role === 'review');
-  if (rv.length) L.push(`<p><b>Watch:</b> ${rv.map(x => esc(pn(x.p))).join(', ')} ${rv.length > 1 ? 'have' : 'has'} volatile ratings. Cap their share or keep a backup program.</p>`);
+  if (rv.length) L.push(`<p><b>Watch:</b> ${rv.map(x => esc(pn(x.p))).join(', ')} ${rv.length > 1 ? 'have' : 'has'} volatile ratings.</p>`);
   return L.join('');
 }
 const memoText = () => $('#pl-memo') ? $('#pl-memo').innerText : '';
@@ -438,7 +515,7 @@ function snapshot(name, A, P, FS) {
     id: Date.now().toString(36), name, created: new Date().toISOString(),
     P: JSON.parse(JSON.stringify(P)),
     FS: { from: FS.from, to: FS.to, ch: [...FS.ch], cat: [...FS.cat], day: [...FS.day], h0: FS.h0, h1: FS.h1, minTvr: FS.minTvr, q: FS.q, p: FS.p },
-    r: { B: A.B, net: A.net, gross: A.gross, loss: A.loss, spots: A.spots, grps: A.grps, freq: A.freq, chs: A.chs.map(c => ({ ch: c.ch, w: c.w, bud: c.bud })), items: A.kept.map(x => ({ ch: x.ch, p: x.p, k: x.k, bud: x.bud, spots: x.spots, mean: x.mean, rp: x.rp, ci: x.ci, role: x.role, hour: x.hour, cat: x.cat, n: x.n, days: x.days })) }
+    r: { B: A.B, spent: A.spent, net: A.net, r3: A.r3, gross: A.gross, loss: A.loss, spots: A.spots, grps: A.grps, freq: A.freq, tiers: A.tiers.map(t => ({ t: t.t, target: t.target, actual: t.actual })), chs: A.chs.map(c => ({ ch: c.ch, w: c.w, bud: c.bud })), items: A.kept.map(x => ({ ch: x.ch, p: x.p, k: x.k, bud: x.bud, spots: x.spots, mean: x.mean, rp: x.rp, ci: x.ci, role: x.role, tier: x.tier, hour: x.hour, cat: x.cat, n: x.n, days: x.days })) }
   };
 }
 function saveScenario(name, A, P = S.P, FS = S.FS) {
@@ -460,7 +537,7 @@ function vScen(el) {
   const card = (sc, isCur) => {
     const r = sc.r, d = cur && !isCur ? (r.net / cur.r.net - 1) * 100 : 0;
     return `<div class="scc ${isCur ? 'cur' : ''}"><span><span class="tag ${isCur ? 'support' : ''}">${esc(sc.name)}</span>${sc.P.cut ? ` <span class="tag review">−${sc.P.cut}% budget</span>` : ''}</span>
-      <div class="big">${nf(r.net, 1)}%</div><div class="muted">Est. net reach · ${lkr(r.B)}</div>
+      <div class="big">${nf(r.net, 1)}%</div><div class="muted">Est. net reach · reach 3+ ${r.r3 != null ? nf(r.r3, 1) + '%' : '—'} · ${lkr(r.B)}</div>
       ${!isCur && cur ? `<div class="delta ${d >= 0 ? 'up' : 'dn'}">${d >= 0 ? '+' : ''}${nf(d, 1)}% reach vs current · ${nf((r.B / cur.r.B - 1) * 100, 0)}% budget</div>` : '<div class="delta muted">live, follows your filters and settings</div>'}
       <div class="mini">${r.chs.map(c => `<div style="width:${(c.w * 100).toFixed(1)}%;background:${cv(c.ch)}"></div>`).join('')}</div>
       <div class="foot">${r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</div>
@@ -473,13 +550,13 @@ function vScen(el) {
   <div class="vhead"><div><h2>Test scenarios and export</h2><p>Save versions of the plan, compare them side by side, then export the one you choose. Scenarios are kept in this browser only.</p></div></div>
   <div class="sc">${cur ? card(cur, true) : ''}${list.map(s => card(s, false)).join('')}
     <div class="scc new"><div style="font-size:28px;color:var(--accent);line-height:1">+</div><b style="color:var(--ink)">New scenario</b><div class="foot">Change the plan, then save it, or ask Planner AI for a what-if</div><button class="btn sm" data-ai="Cut budget 25%">Ask AI: cut 25%</button></div></div>
-  ${S.cur ? panel('Quick budget what-ifs', 'from the current plan, weakest slots dropped first', `<div class="tw"><table><thead><tr><th>Budget</th><th>Net reach</th><th>Change in reach</th><th>Slots kept</th><th>Split</th><th></th></tr></thead><tbody>
-      <tr><td>${lkr(S.base.B)} (full)</td><td>${nf(S.base.net, 1)}%</td><td>—</td><td>${S.base.kept.length}</td><td class="l">${S.base.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td></td></tr>
-      ${quick.map(q => q.r ? `<tr><td>−${q.c}% (${lkr(q.r.B)})</td><td>${nf(q.r.net, 1)}%</td><td style="color:var(--bad)">${nf((q.r.net / S.base.net - 1) * 100, 1)}%</td><td>${q.r.kept.length}</td><td class="l">${q.r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td><button class="btn sm" data-quick="${q.c}">Save</button></td></tr>` : '').join('')}
+  ${S.cur ? panel('Quick budget what-ifs', 're-optimised at each budget; cuts remove repeat spots first, so reach 3+ falls faster than net reach', `<div class="tw"><table><thead><tr><th>Budget</th><th>Net reach</th><th>Change</th><th>Reach 3+</th><th>Spots</th><th>Split</th><th></th></tr></thead><tbody>
+      <tr><td>${lkr(S.base.B)} (full)</td><td>${nf(S.base.net, 1)}%</td><td>—</td><td>${nf(S.base.r3, 1)}%</td><td>${S.base.spots}</td><td class="l">${S.base.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td></td></tr>
+      ${quick.map(q => q.r ? `<tr><td>−${q.c}% (${lkr(q.r.B)})</td><td>${nf(q.r.net, 1)}%</td><td style="color:var(--bad)">${nf((q.r.net / S.base.net - 1) * 100, 1)}%</td><td>${nf(q.r.r3, 1)}%</td><td>${q.r.spots}</td><td class="l">${q.r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td><button class="btn sm" data-quick="${q.c}">Save</button></td></tr>` : '').join('')}
     </tbody></table></div>`) : ''}
   ${sel && cur ? compareHTML(cur, sel) : ''}
   ${panel('Export', 'choose an output for the current plan', `<div class="ex">
-    <button data-deck><b>Client deck</b><small>PowerPoint · 12 slides with rationale, charts and notes</small></button>
+    <button data-deck><b>Client deck</b><small>PowerPoint · 14 slides with rationale, charts and notes</small></button>
     <button id="ex-csv"><b>Spot plan</b><small>CSV · channel × program × slot × budget × spots</small></button>
     <button id="ex-print"><b>Print / PDF</b><small>Planner page, print-ready</small></button>
     <button id="ex-copy"><b>Copy memo</b><small>Plain text for email or deck</small></button>
@@ -502,16 +579,16 @@ function compareHTML(a, b) {
   if (rem.length) ch.push(`<li><span class="ic wa">−</span><span>Programs dropped: ${rem.map(k => esc(pn(k.split('||')[1]))).join(', ')}</span></li>`);
   if (!ch.length) ch.push(`<li><span class="ic in">i</span><span>Same channels and programs; only the numbers differ.</span></li>`);
   return `<div class="grid g2">${panel(`Compare: current vs "${esc(b.name)}"`, '', `<table><thead><tr><th>Metric</th><th>Current</th><th>${esc(b.name)}</th><th>Difference</th></tr></thead><tbody>
-    ${row('Net reach %', ra.net, rb.net, v => nf(v, 1))}${row('Gross reach %', ra.gross, rb.gross, v => nf(v, 1))}${row('Budget (LKR M)', ra.B / 1e6, rb.B / 1e6, v => nf(v, 2))}
+    ${row('Net reach %', ra.net, rb.net, v => nf(v, 1))}${ra.r3 != null && rb.r3 != null ? row('Reach 3+ %', ra.r3, rb.r3, v => nf(v, 1)) : ''}${row('Gross reach %', ra.gross, rb.gross, v => nf(v, 1))}${row('Budget (LKR M)', ra.B / 1e6, rb.B / 1e6, v => nf(v, 2))}
     ${row('Programs', ra.items.length, rb.items.length, v => ni(v))}${row('Channels', ra.chs.length, rb.chs.length, v => ni(v))}${ra.spots || rb.spots ? row('Est. spots', ra.spots, rb.spots, v => ni(v)) + row('Est. GRPs', ra.grps, rb.grps, v => ni(v)) : ''}
     ${row('Net reach per LKR 1M', ra.net / (ra.B / 1e6 || 1), rb.net / (rb.B / 1e6 || 1), v => nf(v, 2))}</tbody></table>`)}
     ${panel(`What changes in "${esc(b.name)}"`, 'compared with the current plan', `<ul class="health">${ch.join('')}</ul>`)}</div>`;
 }
 function planCSV(sc) {
   const r = sc.r;
-  const rows = r.items.map(x => [chName(x.ch), pn(x.p), pn(x.cat), band(x.hour), (x.days || []).map(d => d.slice(0, 3)).join(' '), x.n, x.mean.toFixed(2), x.rp.toFixed(2), x.ci.toFixed(1), x.role, (x.k * 100).toFixed(1), Math.round(x.bud), x.spots, Math.round(x.spots * x.mean)]);
-  const head = ['Channel', 'Program', 'Category', 'Usual slot', 'Days aired', 'Airings in data', 'Avg TVR', 'Avg reach %', 'Steadiness', 'Role', 'Share of plan %', 'Budget LKR', 'Est. spots', 'Est. GRPs'];
-  const top = [['Plan', sc.name], ['Budget LKR', Math.round(r.B)], ['Est. net reach %', r.net.toFixed(1)], ['Gross reach %', r.gross.toFixed(1)], ['Split', r.chs.map(c => chName(c.ch) + ' ' + (c.w * 100).toFixed(0) + '%').join('; ')], []];
+  const rows = r.items.map(x => [chName(x.ch), pn(x.p), x.tier ? 'Tier ' + x.tier : '', pn(x.cat), band(x.hour), (x.days || []).map(d => d.slice(0, 3)).join(' '), x.n, x.mean.toFixed(2), x.rp.toFixed(2), x.ci.toFixed(1), x.role, (x.k * 100).toFixed(1), Math.round(x.bud), x.spots, Math.round(x.spots * x.mean)]);
+  const head = ['Channel', 'Program', 'Tier', 'Category', 'Usual slot', 'Days aired', 'Airings in data', 'Avg TVR', 'Avg reach %', 'Steadiness', 'Role', 'Share of plan %', 'Budget LKR', 'Est. spots', 'Est. GRPs'];
+  const top = [['Plan', sc.name], ['Budget LKR', Math.round(r.B)], ['Est. net reach %', r.net.toFixed(1)], ['Reach 3+ %', r.r3 != null ? r.r3.toFixed(1) : ''], ['Gross reach %', r.gross.toFixed(1)], ['Split', r.chs.map(c => chName(c.ch) + ' ' + (c.w * 100).toFixed(0) + '%').join('; ')], []];
   return toCSV(['TV Media Planner', 'export ' + new Date().toISOString().slice(0, 10)], top) + '\n' + toCSV(head, rows);
 }
 
@@ -534,6 +611,7 @@ function vDup(el) {
   <div class="grid g2">
     <div class="col">
       ${panel('Duplication matrix', '0 = independent audiences, 1 = the smaller audience sits fully inside the larger', g + `<label class="fld" style="margin:12px 0 0;display:flex;align-items:center;gap:12px"><span style="margin:0;white-space:nowrap">Overlap between programs on the same channel</span><input type="number" id="d-intra" step="0.05" min="0" max="1" value="${S.DINTRA}" style="width:80px"></label>
+        <label class="fld" style="margin:12px 0 0;display:flex;align-items:center;gap:12px"><span style="margin:0;white-space:nowrap">New reach from each repeat spot (% of the previous spot's new reach)</span><input type="number" id="d-rep" step="5" min="0" max="90" value="${S.P.repQ}" style="width:80px"></label>
         <p class="hint">Formula: Net(A ∪ B) = A + B − overlap, where overlap = A×B/100 + d × (min(A,B) − A×B/100).</p>`)}
     </div>
     <div class="col">
@@ -892,6 +970,11 @@ document.addEventListener('click', e => {
   if (t.closest('#dr-exp')) { const D = DIMS[S.DR.levels[0]]; new Set(S.F.map(D.key)).forEach(k => S.DR.open.add('¦' + k)); vDrill($('#v-drill')); return; }
   if ((el = t.closest('[data-seg] button'))) {
     const k = el.parentElement.dataset.seg;
+    if (['strategy', 'pacing', 'same'].includes(k)) {
+      S.P[k] = el.dataset.v; if (k === 'strategy') S.P.tiers = [...STRATS[el.dataset.v].t];
+      savePlan(); recalc(); vPlan($('#v-plan')); return;
+    }
+    if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
     if (k === 'chMode') { S.P.chMode = el.dataset.v; S.P.split = {}; if (S.P.chMode === 'manual' && !S.P.chPick.length && S.cur) S.P.chPick = S.cur.chs.map(c => c.ch); savePlan(); recalc(); vPlan($('#v-plan')); return; }
     S.EX[k] = el.dataset.v; killCharts('c-'); vExplore($('#v-explore')); return;
   }
@@ -902,7 +985,8 @@ document.addEventListener('click', e => {
   }
   if ((el = t.closest('[data-preset]'))) { preset(el.dataset.preset); return; }
   if ((el = t.closest('[data-days]'))) { preset(el.dataset.days); return; }
-  if (t.closest('#pl-adj')) { S.editSplit = !S.editSplit; t.closest('#pl-adj').textContent = S.editSplit ? 'Done adjusting' : 'Adjust split'; updatePlan(); return; }
+  if (t.closest('#pl-adj')) { S.editSplit = !S.editSplit; t.closest('#pl-adj').textContent = S.editSplit ? 'Done' : 'Fix channel shares'; updatePlan(); return; }
+  if (t.closest('#fl-csv')) { if (S.sched) download('weekly-schedule-' + S.sched.start + '.csv', scheduleCSV()); return; }
   if (t.closest('#pl-split-reset')) { S.P.split = {}; savePlan(); recalc(); updatePlan(); return; }
   if (t.closest('#p-reset')) { const keep = S.P.budget; S.P = Object.assign({}, DEFAULT_P, { budget: keep }); savePlan(); recalc(); vPlan($('#v-plan')); return; }
   if (t.closest('#pl-save') || t.closest('#sc-save')) { const n = prompt('Name this scenario', 'Scenario ' + String.fromCharCode(65 + S.scenarios.length % 26)); if (n !== null) { saveScenario(n, S.cur); if (S.TAB === 'scen') vScen($('#v-scen')); } return; }
@@ -948,19 +1032,27 @@ document.addEventListener('change', e => {
     S.DR.levels = L.slice(0, 3); S.DR.open.clear(); vDrill($('#v-drill')); return;
   }
   if (t.dataset.split !== undefined) { S.P.split[t.dataset.split] = Math.max(0, Math.min(100, +t.value || 0)); savePlan(); recalc(); updatePlan(); return; }
-  if (t.id === 'p-len') { S.P.spotLen = +t.value; savePlan(); recalc(); updatePlan(); return; }
+  if (t.dataset.p !== undefined && t.type !== 'number') { S.P[t.dataset.p] = t.tagName === 'SELECT' ? +t.value : t.value; savePlan(); recalc(); updatePlan(); return; }
+  if (t.id === 'd-rep') { S.P.repQ = Math.min(90, Math.max(0, +t.value || 0)); savePlan(); recalc(); return; }
   if (t.dataset && t.dataset.a !== undefined && t.closest('.mx')) {
     S.DUP[dkey(t.dataset.a, t.dataset.b)] = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dup', S.DUP); recalc(); killCharts('c-'); vDup($('#v-dup')); return;
   }
   if (t.id === 'd-intra') { S.DINTRA = Math.min(1, Math.max(0, +t.value || 0)); lsSet('dintra', S.DINTRA); recalc(); return; }
 });
-let qTimer;
+let qTimer, pTimer;
 document.addEventListener('input', e => {
   const t = e.target, P = S.P;
   if (t.id === 'f-q') { S.FS.q = t.value; clearTimeout(qTimer); qTimer = setTimeout(applyFilters, 250); return; }
   if (t.id === 'f-catq') { fillCats(t.value); return; }
   if (t.id === 'dq') { S.DQ = t.value; S.DPAGE = 0; clearTimeout(qTimer); qTimer = setTimeout(() => { vData($('#v-data')); const i = $('#dq'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }, 250); return; }
-  const upd = () => { savePlan(); recalc(); updatePlan(); };
+  const upd = () => { savePlan(); clearTimeout(pTimer); pTimer = setTimeout(() => { recalc(); updatePlan(); }, 150); };
+  if (t.dataset.p !== undefined && t.type === 'number') { const v = +t.value; if (t.value !== '' && isFinite(v)) { P[t.dataset.p] = v; upd(); } return; }
+  if (t.dataset.pa !== undefined) {
+    const v = Math.max(0, Math.min(100, +t.value || 0)); P[t.dataset.pa][+t.dataset.i] = v;
+    if (t.dataset.pa === 'tiers') { $('#l-tsum').textContent = P.tiers.reduce((a, b) => a + (+b || 0), 0) + '%'; const m = Object.keys(STRATS).find(k => STRATS[k].t.every((x, i) => x === P.tiers[i])); P.strategy = m || 'custom'; }
+    upd(); return;
+  }
+  if (t.id === 'p-cap') { P.capWk = +t.value; $('#l-cap').textContent = P.capWk; upd(); return; }
   if (t.id === 'p-bud') { P.budget = Math.max(0, +t.value || 0); upd(); return; }
   if (t.id === 'p-cprp') { P.cprp = Math.max(0, +t.value || 0); upd(); return; }
   if (t.id === 'p-tgt') { P.target = +t.value; t.previousElementSibling.querySelector('b').textContent = P.target ? P.target + '%' : 'none'; upd(); return; }
