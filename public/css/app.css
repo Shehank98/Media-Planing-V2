@@ -366,3 +366,36 @@ button.hr:hover{color:var(--accent)}
 .mbox p{margin:0 0 14px}
 .chk{display:flex;gap:8px;align-items:center;margin:6px 0}
 .macts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+
+/* programme basket */
+.bk-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.bk-top .chip b{font-weight:700;margin-left:2px}
+.bk{display:flex;flex-direction:column}
+.bk-grp{border:1px solid var(--line);border-radius:8px;margin-bottom:8px;overflow:hidden}
+.bk-gh{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:7px 10px;background:var(--soft);font-size:12.5px}
+.bk-gh .muted{margin-left:auto;font-size:12px}
+.bk-row{display:grid;grid-template-columns:minmax(0,1fr) 34px 52px 52px 46px 150px 58px;gap:10px;align-items:center;padding:7px 10px;border-top:1px solid var(--line)}
+.bk>.bk-row:first-child{border-top:0}
+.bk-row .r{text-align:right;line-height:1.15}
+.bk-row .r b{font-weight:600}
+.bk-row .sub{font-size:11px}
+.bk-name{min-width:0}
+.bk-name .nm{border:0;background:none;padding:0;font-weight:600;color:var(--ink);text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+.bk-name .nm:hover{color:var(--accent);text-decoration:underline}
+.bk-name .tag{margin-left:6px;font-size:10.5px;padding:0 6px;vertical-align:middle}
+.bk-name .sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bk-share{display:flex;flex-direction:column;gap:3px;font-size:11.5px}
+.bk-share .tr{height:7px;background:var(--soft);border-radius:3px;overflow:hidden}
+.bk-share .fl{height:100%;background:var(--accent);border-radius:3px}
+.bk-act{display:flex;gap:4px;justify-content:flex-end}
+.ico{border:1px solid var(--line);background:var(--panel);border-radius:6px;width:26px;height:26px;display:grid;place-items:center;color:var(--muted);padding:0}
+.ico:hover{color:var(--accent);border-color:var(--accent)}
+.ico.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.ico.x:hover{color:var(--bad);border-color:var(--bad)}
+.bk-more{border:0;border-top:1px dashed var(--line);background:none;color:var(--accent);font-weight:600;padding:7px 10px;text-align:left;width:100%}
+.bk>.bk-more{border:1px dashed var(--line);border-radius:8px;margin-top:6px}
+.bk-more:hover{background:var(--soft)}
+@media (max-width:860px){
+  .bk-row{grid-template-columns:minmax(0,1fr) 46px 46px 58px;gap:8px}
+  .bk-row>div:nth-child(2),.bk-row>div:nth-child(4),.bk-row .bk-share{display:none}
+}

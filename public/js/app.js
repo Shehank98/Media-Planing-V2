@@ -29,7 +29,7 @@ const S = {
   DR: { levels: ['ch', 'cat', 'p'], open: new Set() },
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
-  fv: 'weeks', sched: null,
+  fv: 'weeks', sched: null, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
   chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
@@ -397,7 +397,7 @@ function vPlan(el) {
       </div>
       <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
       <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">result of the spot-by-spot buy</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
-      <div class="panel"><div class="ph"><h3>Program basket</h3><span class="s">Lock forces a buy, Remove takes a program out</span></div><div class="pb" id="pl-basket"></div></div>
+      <div class="panel"><div class="ph"><h3>Programme basket</h3><span class="s" id="bk-sum"></span></div><div class="pb" id="pl-basket"></div></div>
       <div class="panel"><div class="ph"><h3>Weekly flighting</h3><span class="s" id="fl-sub"></span><span class="push">${seg('fv', S, [['weeks', 'By week'], ['days', 'Day plan']])}<button class="btn sm" id="fl-csv">Export schedule</button></span></div><div class="pb" id="pl-flight"></div></div>
     </div>
     <div class="col">
@@ -443,12 +443,7 @@ function updatePlan() {
     return `<tr class="${rev ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.w * 100).toFixed(0)}">` : `<b>${nf(c.w * 100, 1)}%</b>`}</td><td>${lkr(c.bud).replace('LKR ', '')}</td><td>${nf(st.tvr, 2)}</td><td>${nf(st.reach, 2)}%</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
   }).join('')}</tbody></table></div>${S.editSplit ? `<p class="hint">Type a share to fix a channel; the optimiser fills the rest. <button class="link" id="pl-split-reset">Clear fixed shares</button></p>` : ''}`;
   // Basket
-  const mxk = Math.max(...A.kept.map(x => x.k), .01);
-  const row = (x, drop) => `<tr class="${drop ? 'drop' : x.role === 'review' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink);font-weight:600;text-align:left" ${xa({ ch: x.ch, p: x.p })}><div class="pn" title="${esc(pn(x.p))}">${esc(pn(x.p))}</div></button><span class="sub">${dot(x.ch)}${esc(chName(x.ch))} · ${esc(pn(x.cat))}</span></td><td>${tierTag(x.tier)}</td><td>${hl(x.hour)}</td><td>${nf(x.mean, 2)}</td><td>${nf(x.rp, 1)}%</td><td class="l">${stdTag(x.ci, x.n)}</td><td>${drop ? '<span class="tag">dropped by cut</span>' : `<div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><b>${nf(x.k * 100, 1)}%</b></div>`}</td><td>${drop ? '' : lkr(x.bud).replace('LKR ', '')}</td><td>${drop ? '' : ni(x.spots) + (x.atCap ? ' <span class="tag" title="At the weekly spot cap">cap</span>' : '')}</td><td class="l">${roleTag(x.role)}</td><td><button class="ib ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Always buy this program'}">${x.locked ? 'Locked' : 'Lock'}</button><button class="ib x" data-excl="${esc(x.key)}" title="Remove from plan">Remove</button></td></tr>`;
-  const ex = S.P.excl;
-  $('#pl-basket').innerHTML = `<div class="tw"><table><thead><tr><th>Program</th><th>Tier</th><th>Slot</th><th>Avg TVR</th><th>Reach</th><th class="l">Steadiness</th><th>Share of spend</th><th>LKR</th><th>Spots</th><th class="l">Role</th><th></th></tr></thead><tbody>${A.kept.map(x => row(x, false)).join('')}${(A.dropped || []).map(x => row(x, true)).join('')}</tbody></table></div>
-    ${ex.length ? `<p class="hint">Removed: ${ex.map(k => `<span class="tag">${esc(pn(k.split('||')[1]))} <button class="link" data-unexcl="${esc(k)}">restore</button></span>`).join(' ')}</p>` : ''}
-    <p class="hint">Steadiness = mean TVR ÷ standard deviation (7+ very steady, under 3 volatile). Cost per spot = max(minimum rate, CPRP × TVR × length/30).</p>`;
+  renderBasket();
   renderFlight();
   $('#pl-memo').innerHTML = memo(A, base);
   const cp = competing(S.F, A.chs.map(c => c.ch), 8);
@@ -459,6 +454,57 @@ function updatePlan() {
     type: 'line', data: { labels: pts.map((_, i) => (i + 1) + ' ch'), datasets: [{ label: 'Net reach %', data: pts, borderColor: css('--accent'), backgroundColor: css('--accent'), pointRadius: pts.map((_, i) => i + 1 === A.chs.length ? 6 : 3), pointBackgroundColor: pts.map((_, i) => i + 1 === A.chs.length ? css('--heat') : css('--accent')), tension: .3 }] },
     options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.raw}% net reach with top ${c.dataIndex + 1} channel${c.dataIndex ? 's' : ''}` } } }, scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } }
   });
+}
+// Program basket: compact, grouped by channel (or a flat list by spend), with tier filters.
+const ICO_LOCK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+const ICO_X = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+function renderBasket() {
+  const el = $('#pl-basket'), A = S.cur, B = S.BK;
+  if (!el || !A) return;
+  const all = A.kept, mxk = Math.max(...all.map(x => x.k), .01);
+  const watch = all.filter(x => x.role === 'review');
+  const pass = x => B.tier === 'all' || (B.tier === 'watch' ? x.role === 'review' : x.tier === +B.tier);
+  const items = all.filter(pass);
+  const cnt = t => all.filter(x => x.tier === t).length;
+  const chip = (v, l, n) => `<button class="chip ${B.tier === String(v) ? 'on' : ''}" data-bkt="${v}">${l} <b>${n}</b></button>`;
+  const row = x => {
+    const sd = steadiness(x.ci, x.n);
+    const tags = (x.role === 'anchor' ? '<span class="tag anchor">Anchor</span>' : '') + (x.role === 'review' ? `<span class="tag review" title="Ratings swing week to week (steadiness ${nf(x.ci, 1)})">Volatile</span>` : '') + (x.locked ? '<span class="tag">Locked</span>' : '') + (x.atCap ? `<span class="tag" title="At the ${S.P.capWk}/week spot cap">At cap</span>` : '');
+    return `<div class="bk-row">
+      <div class="bk-name"><button class="nm" ${xa({ ch: x.ch, p: x.p })} title="${esc(pn(x.p))}: open detail">${esc(pn(x.p))}</button>${tags}
+        <span class="sub">${B.view === 'list' ? dot(x.ch) + esc(chName(x.ch)) + ' · ' : ''}${hl(x.hour)} · ${esc(pn(x.cat))} · ${sd.label.toLowerCase()}</span></div>
+      <div>${tierTag(x.tier)}</div>
+      <div class="r"><b>${nf(x.mean, 1)}</b><span class="sub">TVR</span></div>
+      <div class="r"><b>${nf(x.rp, 0)}%</b><span class="sub">reach</span></div>
+      <div class="r"><b>${x.spots}</b><span class="sub">spots</span></div>
+      <div class="bk-share"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><span><b>${nf(x.k * 100, 1)}%</b> · ${lkr(x.bud).replace('LKR ', '')}</span></div>
+      <div class="bk-act"><button class="ico ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Lock: always buy this programme'}" aria-label="${x.locked ? 'Unlock' : 'Lock'} ${esc(pn(x.p))}">${ICO_LOCK}</button><button class="ico x" data-excl="${esc(x.key)}" title="Remove from plan" aria-label="Remove ${esc(pn(x.p))}">${ICO_X}</button></div>
+    </div>`;
+  };
+  let body = '';
+  if (!items.length) body = '<p class="muted" style="padding:10px 0">No programmes in this group.</p>';
+  else if (B.view === 'list') {
+    const lim = B.all ? items.length : Math.min(10, items.length);
+    body = items.slice(0, lim).map(row).join('') + (items.length > lim ? `<button class="bk-more" data-bkall>Show all ${items.length} programmes</button>` : items.length > 10 ? '<button class="bk-more" data-bkall>Show top 10 only</button>' : '');
+  } else {
+    body = A.chs.map(c => {
+      const its = items.filter(x => x.ch === c.ch); if (!its.length) return '';
+      const open = B.open.has(c.ch), lim = open ? its.length : Math.min(2, its.length);
+      return `<div class="bk-grp"><div class="bk-gh">${dot(c.ch)}<b>${esc(chName(c.ch))}</b><span class="muted">${nf(c.w * 100, 0)}% of spend · ${lkr(c.bud).replace('LKR ', '')} · ${c.spots} spots · ${c.progs.length} programme${c.progs.length > 1 ? 's' : ''}</span></div>
+        ${its.slice(0, lim).map(row).join('')}
+        ${its.length > 2 ? `<button class="bk-more" data-bkopen="${esc(c.ch)}">${open ? 'Show less' : `+ ${its.length - lim} more on ${esc(chName(c.ch))}`}</button>` : ''}</div>`;
+    }).join('');
+  }
+  if ($('#bk-sum')) $('#bk-sum').textContent = `${all.length} programmes · ${ni(A.spots)} spots · click a name for detail`;
+  const dropped = A.dropped || [], ex = S.P.excl;
+  el.innerHTML = `
+    <div class="bk-top">
+      <div class="chips">${chip('all', 'All', all.length)}${chip(1, 'Tier 1', cnt(1))}${chip(2, 'Tier 2', cnt(2))}${chip(3, 'Tier 3', cnt(3))}${watch.length ? chip('watch', 'Volatile', watch.length) : ''}</div>
+      ${seg('view', B, [['channel', 'By channel'], ['list', 'By spend']])}
+    </div>
+    <div class="bk">${body}</div>
+    ${dropped.length ? `<p class="hint">Dropped by the ${S.P.cut}% budget cut: ${dropped.map(x => esc(pn(x.p))).join(', ')}.</p>` : ''}
+    ${ex.length ? `<p class="hint">Removed by you: ${ex.map(k => `<span class="tag">${esc(pn(k.split('||')[1]))} <button class="link" data-unexcl="${esc(k)}">restore</button></span>`).join(' ')}</p>` : ''}`;
 }
 function renderFlight() {
   const A = S.cur, Sc = S.sched, P = S.P, el = $('#pl-flight');
@@ -474,7 +520,8 @@ function renderFlight() {
   }
   el.innerHTML = `<div class="chart sm"><canvas id="c-flight"></canvas></div>
     <div class="tw" style="max-height:360px;overflow:auto;margin-top:10px"><table><thead><tr><th>Program</th><th>Tier</th>${Sc.weeks.map((_, i) => `<th>W${i + 1}<span class="sub">${wkDate(i)}</span></th>`).join('')}<th>Total</th></tr></thead><tbody>
-    ${Sc.grid.map(g => `<tr><td><div class="pn">${esc(pn(g.x.p))}</div><span class="sub">${dot(g.x.ch)}${esc(chName(g.x.ch))} · ${hl(g.x.hour)}</span></td><td>${tierTag(g.x.tier)}</td>${g.alloc.map(n => `<td style="${n ? '' : 'color:var(--muted)'}">${n || '·'}</td>`).join('')}<td><b>${g.x.spots}</b></td></tr>`).join('')}
+    ${Sc.grid.slice(0, S.BK.flAll ? Sc.grid.length : 8).map(g => `<tr><td><div class="pn">${esc(pn(g.x.p))}</div><span class="sub">${dot(g.x.ch)}${esc(chName(g.x.ch))} · ${hl(g.x.hour)}</span></td><td>${tierTag(g.x.tier)}</td>${g.alloc.map(n => `<td style="${n ? '' : 'color:var(--muted)'}">${n || '·'}</td>`).join('')}<td><b>${g.x.spots}</b></td></tr>`).join('')}
+    ${Sc.grid.length > 8 ? `<tr><td colspan="${Sc.weeks.length + 3}"><button class="link" data-flall>${S.BK.flAll ? 'Show top 8 only' : `Show all ${Sc.grid.length} programmes`}</button></td></tr>` : ''}
     <tr><td><b>Spots</b></td><td></td>${Sc.weeks.map(w => `<td><b>${w.spots}</b></td>`).join('')}<td><b>${A.spots}</b></td></tr>
     <tr><td><b>Budget</b></td><td></td>${Sc.weeks.map(w => `<td>${lkr(w.bud).replace('LKR ', '')}</td>`).join('')}<td><b>${lkr(A.spent).replace('LKR ', '')}</b></td></tr>
     <tr><td><b>GRPs</b></td><td></td>${Sc.weeks.map(w => `<td>${ni(w.grps)}</td>`).join('')}<td><b>${ni(A.grps)}</b></td></tr></tbody></table></div>`;
@@ -941,6 +988,10 @@ document.addEventListener('click', e => {
   const t = e.target;
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
+  if ((el = t.closest('[data-bkt]'))) { S.BK.tier = el.dataset.bkt; renderBasket(); return; }
+  if ((el = t.closest('[data-bkopen]'))) { const c = el.dataset.bkopen; S.BK.open.has(c) ? S.BK.open.delete(c) : S.BK.open.add(c); renderBasket(); return; }
+  if (t.closest('[data-flall]')) { S.BK.flAll = !S.BK.flAll; renderFlight(); return; }
+  if (t.closest('[data-bkall]')) { S.BK.all = !S.BK.all; renderBasket(); return; }
   if ((el = t.closest('[data-deck]'))) { exportDeck(); return; }
   if (t.closest('#dk-cancel') || t.id === 'deckModal') { $('#deckModal').hidden = true; return; }
   if ((el = t.closest('[data-demo]'))) { loadDemo(); return; }
@@ -983,6 +1034,7 @@ document.addEventListener('click', e => {
       S.P[k] = el.dataset.v; if (k === 'strategy') S.P.tiers = [...STRATS[el.dataset.v].t];
       savePlan(); recalc(); vPlan($('#v-plan')); return;
     }
+    if (k === 'view') { S.BK.view = el.dataset.v; S.BK.all = false; renderBasket(); return; }
     if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
     if (k === 'chMode') { S.P.chMode = el.dataset.v; S.P.split = {}; if (S.P.chMode === 'manual' && !S.P.chPick.length && S.cur) S.P.chPick = S.cur.chs.map(c => c.ch); savePlan(); recalc(); vPlan($('#v-plan')); return; }
     S.EX[k] = el.dataset.v; killCharts('c-'); vExplore($('#v-explore')); return;
