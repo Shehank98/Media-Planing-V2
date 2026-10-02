@@ -301,12 +301,17 @@ export function scen(plan, f, P, getD, dIntra, trace) {
       if (!best) break; take(best, bg);
     }
   };
+  // Fixed schedule: after rate edits the planner keeps the planned spots and only re-costs them.
+  const frozen = P.frozen && f === 1 ? P.frozen : null;
+  if (frozen) { phase = 'fixed'; items.forEach(x => { for (let i = 0, n = Math.max(0, frozen[x.key] | 0); i < n; i++) take(x, null); }); }
+  else {
   phase = 'locked'; items.filter(x => x.locked).forEach(x => { while (x.cnt < Math.min(act, x.capTot) && ok(x)) take(x, null); });
   phase = 'minimums';
   Object.keys(chFix).forEach(ch => fill(byCh.get(ch) || [], x => chSp[ch] + x.cost <= chFix[ch] * B + E));
   DPS.forEach(d => { if (dpMin[d] > 0) fill(items.filter(x => x.dp === d), () => dpSp[d] < dpMin[d] * B); });
   [1, 2, 3].forEach(t => (phase = 'tier' + t) && fill(items.filter(x => x.tier === t), x => tierSp[t] + x.cost <= tiers[t - 1] / 100 * B + E));
   phase = 'leftover'; fill(items);
+  }
 
   const tot = spent || 1;
   const kept = items.filter(x => x.cnt > 0).map(x => ({ ...x, spots: x.cnt, bud: x.cnt * x.cost, views: x.cnt * x.mean, R: progR(x, x.cnt), k: x.cnt * x.cost / tot, atCap: x.cnt >= x.capTot }))
@@ -316,7 +321,7 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const chs = [...m.values()].sort((a, b) => b.w - a.w);
   const gross = chs.reduce((a, c) => a + c.R, 0), views = kept.reduce((a, x) => a + x.views, 0);
   return {
-    B, f, spent, unspent: Math.max(0, B - spent), kept, dropped: [], chs, gross, net: curNet,
+    B, f, spent, unspent: Math.max(0, B - spent), over: Math.max(0, spent - B), fixed: !!frozen, kept, dropped: [], chs, gross, net: curNet,
     loss: gross > 0 ? (gross - curNet) / gross : 0, eff: B > 0 ? curNet / (B / 1e6) : 0, views, spots: kept.reduce((a, x) => a + x.spots, 0),
     freq: curNet > 0 && views > 0 ? views / curNet : 0, r3: reachAtLeast(curNet, curNet > 0 ? views / curNet : 0, 3), capTot: capWk * act, act, W, cal, thr: plan.thr, relaxed,
     tiers: [1, 2, 3].map(t => ({ t, target: tiers[t - 1], actual: tierSp[t] / tot * 100, n: kept.filter(x => x.tier === t).length, avail: items.filter(x => x.tier === t).length })),
@@ -416,7 +421,8 @@ export function healthChecks(rows, plan, A, P, getD) {
   L.push({ t: steady >= it.length * .7 ? 'ok' : 'wa', m: `${steady} of ${it.length} programs deliver steady ratings week to week` });
   const anchors = it.filter(x => x.role === 'anchor');
   L.push({ t: anchors.length ? 'ok' : 'wa', m: anchors.length ? `${anchors.length} anchor program${anchors.length > 1 ? 's' : ''} carry the plan (Tier 1 and steady)` : 'No anchor programs: nothing in the basket is both Tier 1 and steady' });
-  if (A.unspent > A.B * .02) L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent because caps are reached. Raise the spots-per-week cap, allow more programs per channel or widen daypart limits.` });
+  if (A.fixed) L.push({ t: A.over > 0 ? 'wa' : 'in', m: A.over > 0 ? `Schedule kept as planned after rate edits: it is <b>${lkr(A.over)} over budget</b>. Re-optimise to fit the budget with the new rates.` : `Schedule kept as planned after rate edits (${lkr(A.unspent)} under budget). Re-optimise to use the new rates.` });
+  if (!A.fixed && A.unspent > A.B * .02) L.push({ t: 'wa', m: `<b>${lkr(A.unspent)}</b> (${nf(A.unspent / A.B * 100, 0)}%) is unspent because caps are reached. Raise the spots-per-week cap, allow more programs per channel or widen daypart limits.` });
   A.tiers.forEach(t => { if (t.target > 0 && Math.abs(t.actual - t.target) > 10) L.push({ t: 'in', m: `Tier ${t.t} gets ${nf(t.actual, 0)}% against a ${nf(t.target, 0)}% target${t.avail ? '' : ' (no Tier ' + t.t + ' programs in this brief)'}; leftover budget rolled to other tiers.` }); });
   A.dps.forEach(d => { if (d.present && d.min > 0 && d.actual + .5 < d.min) L.push({ t: 'wa', m: `${d.d} gets ${nf(d.actual, 0)}%, below its ${nf(d.min, 0)}% minimum. Not enough spots available there under the caps.` }); });
   if (A.relaxed) L.push({ t: 'in', m: 'Daypart maximums were scaled up because the brief only covers some dayparts.' });

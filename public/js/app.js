@@ -106,7 +106,7 @@ function recalc() {
   S.health = healthChecks(S.F, S.plan, S.cur, S.P, getD);
 }
 function simulate(patch, fsPatch) {
-  const P2 = Object.assign({}, S.P, patch);
+  const P2 = Object.assign({}, S.P, patch, { frozen: null });
   const rows = fsPatch ? filterRows(Object.assign({}, S.FS, fsPatch)) : S.F;
   const pl = planCalc(rows, P2);
   if (!pl || !pl.items.length) return null;
@@ -349,6 +349,7 @@ function vPlan(el) {
   el.innerHTML = `
   <div class="vhead"><div><h2>Build your plan</h2><p>Spots are bought one at a time where they add the most new reach per rupee, within your tier split, caps and daypart limits.</p></div>
     <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn" data-deck>Export deck (PPTX)</button><button class="btn pri" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button></span></div>
+  ${S.P.frozen ? `<div class="frozen"><div><b>Schedule is fixed</b> because rates were edited in the Schedule tab. Changing any setting below re-optimises the plan.</div><button class="btn pri" data-reopt>Re-optimise now</button></div>` : ''}
   <div class="planbar" id="pl-bar"></div>
   <div class="grid g-plan">
     <div class="col">
@@ -612,6 +613,7 @@ function vSchedule(el) {
   el.innerHTML = `
   <div class="vhead"><div><h2>Booking schedule</h2><p>Day-by-day spots per channel, by creative, ready to send to channels. Same layout as the Excel export.</p></div>
     <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule</button></span></div>
+  ${A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
   <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Spots', ni(M.tot.spots))}${sm('Rate card value', 'LKR ' + L(M.tot.rcT))}${sm('Negotiated (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
   <div class="grid g2">
     ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
@@ -1160,6 +1162,10 @@ async function runDeck() {
   finally { go.disabled = false; go.textContent = 'Create deck'; }
 }
 
+const PLAN_EDIT = '#v-plan .settings, #v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], #v-plan [data-split], #pl-split-reset, [data-cr-add], [data-cr-del], [data-act]';
+function unfreezeIf(t) { if (S.P.frozen && t && t.closest && t.closest(PLAN_EDIT)) { S.P.frozen = null; savePlan(); document.querySelectorAll('#v-plan .frozen').forEach(e => e.remove()); } }
+['click', 'change', 'input'].forEach(ev => document.addEventListener(ev, e => unfreezeIf(e.target), true));
+
 /* ---------- events ---------- */
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b && S.ROWS.length) setTab(b.dataset.tab); });
 $('#filterBtn').onclick = () => openDrawer(S.ROWS.length ? 'filters' : 'upload');
@@ -1187,6 +1193,7 @@ document.addEventListener('click', e => {
   if ((el = t.closest('[data-cr-del]'))) { S.P.creatives.splice(+el.dataset.crDel, 1); S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return; }
   if ((el = t.closest('[data-sch-ch]'))) { S.SCH.ch = el.dataset.schCh; vSchedule($('#v-schedule')); return; }
   if (t.closest('#sch-xlsx')) { runXlsx(t.closest('#sch-xlsx')); return; }
+  if (t.closest('[data-reopt]')) { S.P.frozen = null; savePlan(); recalc(); refreshPlanViews(); toast('Re-optimised with the new rates'); return; }
   if ((el = t.closest('[data-bkt]'))) { S.BK.tier = el.dataset.bkt; renderBasket(); return; }
   if ((el = t.closest('[data-bkopen]'))) { const c = el.dataset.bkopen; S.BK.open.has(c) ? S.BK.open.delete(c) : S.BK.open.add(c); renderBasket(); return; }
   if (t.closest('[data-flall]')) { S.BK.flAll = !S.BK.flAll; renderFlight(); return; }
@@ -1303,6 +1310,7 @@ document.addEventListener('change', e => {
     const c = S.P.creatives[+t.dataset.cr], f = t.dataset.f; c[f] = f === 'name' ? t.value.trim() || 'Creative' : Math.max(0, +t.value || 0);
     S.P.spotLen = Math.round(avgLen(S.P)); savePlan(); recalc(); vPlan($('#v-plan')); return;
   }
+  if ((t.dataset.rate !== undefined || t.dataset.disc !== undefined) && !S.P.frozen && S.cur) S.P.frozen = Object.fromEntries(S.cur.kept.map(x => [x.key, x.spots]));
   if (t.dataset.rate !== undefined) { const v = +String(t.value).replace(/[^\d.]/g, ''); if (v > 0) S.P.rates[t.dataset.rate] = v; else delete S.P.rates[t.dataset.rate]; savePlan(); recalc(); refreshPlanViews(); return; }
   if (t.dataset.disc !== undefined) { S.P.disc[t.dataset.disc] = Math.min(95, Math.max(0, +t.value || 0)); savePlan(); recalc(); refreshPlanViews(); return; }
   if (t.dataset.meta !== undefined) { const m = lsGet('deckMeta', {}); m[t.dataset.meta] = t.value; lsSet('deckMeta', m); return; }
