@@ -15,11 +15,14 @@ A browser-only TV media planning dashboard. Upload a TV ratings export (Excel or
 | Explore | Day/channel/category × hour heatmap (TVR, Reach %, Share %, Airings), day of week, TVR by hour, dayparts by channel, **Slot finder** ("everything at 10 PM on Hiru, Derana, Sirasa") |
 | Drill down | Configurable tree (e.g. Channel ▸ Category ▸ Program ▸ airings) |
 | Planner | Brief, budget, cost per rating point, spot length, target reach, auto or manual channels, budget cut, manual split override, lock or exclude programs, health check, planner memo, reach build curve, competing slots |
-| Scenarios | Save, load, compare (what changes), quick budget what-ifs, export spot plan CSV, print/PDF, copy memo |
+| Scenarios | Save, load, compare (what changes), quick budget what-ifs, **client deck (PPTX)**, spot plan CSV, print/PDF, copy memo |
 | Duplication | Editable channel duplication matrix, gross vs net reach |
 | Data | Sortable, searchable, paged table; CSV export; data quality checks |
 
 Every chart bar, heatmap cell, table row and insight card opens a **detail drawer** (KPIs, trend, breakdown, airings) where you can drill further, filter the dashboard to it, or lock or exclude the program from the plan.
+
+### Client deck (PowerPoint)
+"Export deck (PPTX)" on the Planner or Scenarios tab builds a 12-slide deck in the browser (pptxgenjs, loaded on demand from jsDelivr): title, executive summary, brief and approach, when the audience watches, channel strength, recommended split with a reason per channel, program basket, anchor programs, net reach after duplication, budget scenarios, risks and next steps, methodology. Charts and tables are native and editable; every slide has speaker notes. With `GEMINI_API_KEY` set, Gemini drafts the headline, summary, per-channel reasons, risks and next steps; otherwise they are written from the plan numbers.
 
 ### Required columns
 `Channel, Date, Start, Program, TVR`. Optional: `Day, End, Duration, Category, TVR Share %, Reach %`. Times like `20:09`, `8:09 PM` and Excel time cells are all handled.
@@ -51,6 +54,7 @@ public/css/app.css   styles (light and dark)
 public/js/engine.js  parsing, aggregation, duplication, plan allocation
 public/js/app.js     UI, drill-down, planner, scenarios
 public/js/ai.js      AI context builder, Gemini call, offline planner
+public/js/deck.js    PowerPoint deck export with rationale
 public/js/demo.js    synthetic demo dataset (fictional)
 public/js/store.js   IndexedDB / localStorage helpers
 ```

@@ -6,6 +6,7 @@ import {
 import { makeDemoRows } from './demo.js';
 import { idbGet, idbSet, idbDel, lsGet, lsSet } from './store.js';
 import { buildContext, askRemote, askLocal, splitAction } from './ai.js';
+import { buildDeck } from './deck.js';
 
 const $ = s => document.querySelector(s);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -26,6 +27,7 @@ const S = {
   chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
+S.getD = getD;
 const charts = {};
 const savePlan = () => lsSet('plan', S.P);
 
@@ -39,6 +41,8 @@ const panel = (t, s, body, extra = '', pb = '') => `<div class="panel"><div clas
 const kp = (l, v, s, cls = '') => `<div class="kpi ${cls}"><span>${l}</span><b>${v}</b><small title="${esc(String(s).replace(/<[^>]+>/g, ''))}">${s}</small></div>`;
 const seg = (k, obj, opts) => `<div class="seg" data-seg="${k}">${opts.map(o => `<button data-v="${o[0]}" class="${obj[k] === o[0] ? 'on' : ''}">${o[1]}</button>`).join('')}</div>`;
 const stdTag = (ci, n) => { const s = steadiness(ci, n); return `<span class="std ${s.cls}">${s.label}${n >= 2 ? ' · ' + nf(ci, 1) : ''}</span>`; };
+const svgI = d => `<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+const ICON = { ok: svgI('<path d="M5 12l5 5L19 7"/>'), wa: svgI('<path d="M12 6v8M12 18.5v.5"/>'), in: svgI('<path d="M12 11v7M12 6.5v.5"/>') };
 const roleTag = r => `<span class="tag ${r}">${{ anchor: 'Anchor', support: 'Support', review: 'Review' }[r]}</span>`;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => t.classList.remove('on'), 2200); }
 function download(name, text, type = 'text/csv;charset=utf-8') {
@@ -142,7 +146,7 @@ function welcomeHTML() {
     <div><h1>Plan TV smarter, straight from your ratings file</h1><p class="lead">Upload your program ratings export (Excel or CSV). Explore when and where people watch, drill into any channel or program, then build a channel split and program basket with net reach.</p></div>
     <div class="drop" id="wdrop"><b>Drop your Excel or CSV file here</b><p>Needed columns: Channel, Date, Start, Program, TVR. Also used: Day, End, Duration, Category, TVR Share %, Reach %.</p>
       <button class="btn pri" data-pick>Choose file</button> <button class="btn" data-demo>Try with demo data</button></div>
-    <div class="priv"><b>🔒</b><div><b>Your data stays in your browser.</b> The file is read on this device and saved only in this browser. Colleagues opening the same link see an empty dashboard until they upload their own file. Planner AI receives only a short summary of the filtered numbers, never the file.</div></div>
+    <div class="priv"><svg class="pico" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><div><b>Your data stays in your browser.</b> The file is read on this device and saved only in this browser. Colleagues opening the same link see an empty dashboard until they upload their own file. Planner AI receives only a short summary of the filtered numbers, never the file.</div></div>
     <div class="feat">
       <div><b>1 · Explore</b><span>Day × hour heatmaps, best days, slot finder: "what airs at 10 PM on Hiru, Derana and Sirasa?"</span></div>
       <div><b>2 · Drill down</b><span>Click any bar, cell or row. Channel ▸ category ▸ program ▸ every airing.</span></div>
@@ -322,7 +326,7 @@ function vPlan(el) {
   const chOn = S.CH.filter(c => f.ch.has(c));
   el.innerHTML = `
   <div class="vhead"><div><h2>Build your plan</h2><p>Recommended split and basket from the filtered data. Lock or exclude programs, adjust the split, then save scenarios.</p></div>
-    <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn pri" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button></span></div>
+    <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn" data-deck>Export deck (PPTX)</button><button class="btn pri" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button></span></div>
   <div class="planbar" id="pl-bar"></div>
   <div class="grid g-plan">
     <div class="col">
@@ -356,7 +360,7 @@ function vPlan(el) {
         <div class="panel"><div class="ph"><h3>Plan health check</h3></div><div class="pb"><ul class="health" id="pl-health"></ul></div></div>
       </div>
       <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">how the budget is divided</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done adjusting' : 'Adjust split'}</button></span></div><div class="pb" id="pl-split"></div></div>
-      <div class="panel"><div class="ph"><h3>Program basket</h3><span class="s">sorted by share of the total plan · 🔒 lock keeps a program, ✕ removes it</span></div><div class="pb" id="pl-basket"></div></div>
+      <div class="panel"><div class="ph"><h3>Program basket</h3><span class="s">sorted by share of the total plan · Lock keeps a program, Remove takes it out</span></div><div class="pb" id="pl-basket"></div></div>
     </div>
     <div class="col">
       <div class="panel"><div class="ph"><h3>Planner memo</h3><span class="s">auto-written from the numbers</span><span class="push"><button class="link" id="pl-copy">Copy</button></span></div><div class="pb memo" id="pl-memo"></div></div>
@@ -377,23 +381,23 @@ function updatePlan() {
   const warn = S.health.filter(h => h.t === 'wa').length;
   const m = (l, v, cls = '') => `<div class="m ${cls}"><small>${l}</small><b>${v}</b></div>`;
   $('#pl-bar').innerHTML = m('Est. net reach', nf(A.net, 1) + '%', 'hl') + m('Gross reach', nf(A.gross, 1) + '%') + m('Budget', lkr(A.B)) + m('Channels', A.chs.length) + m('Programs', A.kept.length) +
-    (P.cprp > 0 ? m('Est. spots', ni(A.spots)) + m('Est. GRPs', ni(A.grps)) + m('Avg frequency', nf(A.freq, 1) + 'x') : '') + m('Health', warn ? warn + ' ⚠' : '✓', '');
+    (P.cprp > 0 ? m('Est. spots', ni(A.spots)) + m('Est. GRPs', ni(A.grps)) + m('Avg frequency', nf(A.freq, 1) + 'x') : '') + m('Health', warn ? warn + (warn > 1 ? ' warnings' : ' warning') : 'OK', '');
   const cmp = (a, b) => P.cut > 0 ? ` <span class="muted" style="font-size:12px">(full budget ${b})</span>` : '';
   $('#pl-net').innerHTML = `<div class="bigline"><b>${nf(A.net, 1)}%</b><span class="muted">of the TV audience, reached at least once${cmp(A.net, nf(base.net, 1) + '%')}</span></div>
     <div class="flow"><div><b>${nf(A.gross, 1)}%</b><small>Gross reach</small></div><i>−</i><div><b>${nf(A.gross - A.net, 1)} pts</b><small>Same viewers</small></div><i>=</i><div><b style="color:var(--accent)">${nf(A.net, 1)}%</b><small>Net reach</small></div></div>
     <p class="hint">Net reach per LKR 1M: ${nf(A.eff, 2)} pts. Duplication factors are assumptions (see Duplication tab) because the file has no respondent-level data.${P.target ? ` Target ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
-  $('#pl-health').innerHTML = S.health.map(h => `<li><span class="ic ${h.t}">${{ ok: '✓', wa: '!', in: 'i' }[h.t]}</span><span>${h.m}</span></li>`).join('');
+  $('#pl-health').innerHTML = S.health.map(h => `<li><span class="ic ${h.t}">${ICON[h.t]}</span><span>${h.m}</span></li>`).join('');
   // Split
   $('#pl-split').innerHTML = `<div class="stack">${A.chs.map(c => `<div style="width:${(c.w * 100).toFixed(2)}%;background:${cv(c.ch)}" title="${esc(chName(c.ch))} ${nf(c.w * 100, 1)}%">${c.w > .08 ? esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0) + '%' : ''}</div>`).join('')}</div>
    <div class="tw"><table><thead><tr><th>Channel</th><th>Share</th><th>Budget</th><th>Avg TVR</th><th>Avg reach</th><th>Programs</th>${P.cprp > 0 ? '<th>Spots</th>' : ''}<th class="l">Why this weight</th></tr></thead><tbody>${A.chs.map(c => {
     const st = S.plan.cs.find(x => x.ch === c.ch), sel = S.plan.sel.find(x => x.ch === c.ch);
     const rev = c.progs.some(x => x.role === 'review') && c.progs.length === 1;
-    const why = sel && sel.manual ? 'Manual share' : st === S.plan.cs[0] ? 'Highest reach per airing' : c.progs.length === 1 ? (rev ? '⚠ All spend on one volatile program' : 'Single program: ' + pn(c.progs[0].p)) : c.progs.some(x => x.role === 'anchor') ? 'Carries anchor ' + pn(c.progs.find(x => x.role === 'anchor').p) : 'Adds incremental reach';
+    const why = sel && sel.manual ? 'Manual share' : st === S.plan.cs[0] ? 'Highest reach per airing' : c.progs.length === 1 ? (rev ? 'Risk: all spend on one volatile program' : 'Single program: ' + pn(c.progs[0].p)) : c.progs.some(x => x.role === 'anchor') ? 'Carries anchor ' + pn(c.progs.find(x => x.role === 'anchor').p) : 'Adds incremental reach';
     return `<tr class="${rev ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.w * 100).toFixed(0)}">` : `<b>${nf(c.w * 100, 1)}%</b>`}</td><td>${lkr(c.bud).replace('LKR ', '')}</td><td>${nf(st.tvr, 2)}</td><td>${nf(st.reach, 2)}%</td><td>${c.progs.length}</td>${P.cprp > 0 ? `<td>${ni(c.spots)}</td>` : ''}<td class="l">${esc(why)}</td></tr>`;
   }).join('')}</tbody></table></div>${S.editSplit ? `<p class="hint">Type a share for any channel; the rest are rebalanced automatically. <button class="link" id="pl-split-reset">Back to recommended split</button></p>` : ''}`;
   // Basket
   const mxk = Math.max(...A.kept.map(x => x.k), .01);
-  const row = (x, drop) => `<tr class="${drop ? 'drop' : x.role === 'review' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink);font-weight:600;text-align:left" ${xa({ ch: x.ch, p: x.p })}><div class="pn" title="${esc(pn(x.p))}">${esc(pn(x.p))}</div></button><span class="sub">${dot(x.ch)}${esc(chName(x.ch))} · ${esc(pn(x.cat))}</span></td><td>${hl(x.hour)}</td><td>${nf(x.mean, 2)}</td><td>${nf(x.rp, 1)}%</td><td class="l">${stdTag(x.ci, x.n)}</td><td>${drop ? '<span class="tag">dropped by cut</span>' : `<div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><b>${nf(x.k * 100, 1)}%</b></div>`}</td><td>${drop ? '' : lkr(x.bud).replace('LKR ', '')}</td>${P.cprp > 0 ? `<td>${drop ? '' : ni(x.spots)}</td>` : ''}<td class="l">${roleTag(x.role)}</td><td><button class="ib ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Lock in plan'}">🔒</button><button class="ib x" data-excl="${esc(x.key)}" title="Remove from plan">✕</button></td></tr>`;
+  const row = (x, drop) => `<tr class="${drop ? 'drop' : x.role === 'review' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink);font-weight:600;text-align:left" ${xa({ ch: x.ch, p: x.p })}><div class="pn" title="${esc(pn(x.p))}">${esc(pn(x.p))}</div></button><span class="sub">${dot(x.ch)}${esc(chName(x.ch))} · ${esc(pn(x.cat))}</span></td><td>${hl(x.hour)}</td><td>${nf(x.mean, 2)}</td><td>${nf(x.rp, 1)}%</td><td class="l">${stdTag(x.ci, x.n)}</td><td>${drop ? '<span class="tag">dropped by cut</span>' : `<div class="mini-bar"><div class="tr"><div class="fl" style="width:${(x.k / mxk * 100).toFixed(0)}%"></div></div><b>${nf(x.k * 100, 1)}%</b></div>`}</td><td>${drop ? '' : lkr(x.bud).replace('LKR ', '')}</td>${P.cprp > 0 ? `<td>${drop ? '' : ni(x.spots)}</td>` : ''}<td class="l">${roleTag(x.role)}</td><td><button class="ib ${x.locked ? 'on' : ''}" data-lock="${esc(x.key)}" title="${x.locked ? 'Unlock' : 'Always keep this program'}">${x.locked ? 'Locked' : 'Lock'}</button><button class="ib x" data-excl="${esc(x.key)}" title="Remove from plan">Remove</button></td></tr>`;
   const ex = S.P.excl;
   $('#pl-basket').innerHTML = `<div class="tw"><table><thead><tr><th>Program</th><th>Slot</th><th>Avg TVR</th><th>Reach</th><th class="l">Steadiness</th><th>Share of plan</th><th>LKR</th>${P.cprp > 0 ? '<th>Spots</th>' : ''}<th class="l">Role</th><th></th></tr></thead><tbody>${A.kept.map(x => row(x, false)).join('')}${A.dropped.map(x => row(x, true)).join('')}</tbody></table></div>
     ${ex.length ? `<p class="hint">Removed: ${ex.map(k => `<span class="tag">${esc(pn(k.split('||')[1]))} <button class="link" data-unexcl="${esc(k)}">restore</button></span>`).join(' ')}</p>` : ''}
@@ -468,17 +472,18 @@ function vScen(el) {
   el.innerHTML = `
   <div class="vhead"><div><h2>Test scenarios and export</h2><p>Save versions of the plan, compare them side by side, then export the one you choose. Scenarios are kept in this browser only.</p></div></div>
   <div class="sc">${cur ? card(cur, true) : ''}${list.map(s => card(s, false)).join('')}
-    <div class="scc new"><div style="font-size:26px;color:var(--accent)">＋</div><b style="color:var(--ink)">New scenario</b><div class="foot">Change the plan, then save it, or ask Planner AI for a what-if</div><button class="btn sm" data-ai="Cut budget 25%">Ask AI: cut 25%</button></div></div>
+    <div class="scc new"><div style="font-size:28px;color:var(--accent);line-height:1">+</div><b style="color:var(--ink)">New scenario</b><div class="foot">Change the plan, then save it, or ask Planner AI for a what-if</div><button class="btn sm" data-ai="Cut budget 25%">Ask AI: cut 25%</button></div></div>
   ${S.cur ? panel('Quick budget what-ifs', 'from the current plan, weakest slots dropped first', `<div class="tw"><table><thead><tr><th>Budget</th><th>Net reach</th><th>Change in reach</th><th>Slots kept</th><th>Split</th><th></th></tr></thead><tbody>
       <tr><td>${lkr(S.base.B)} (full)</td><td>${nf(S.base.net, 1)}%</td><td>—</td><td>${S.base.kept.length}</td><td class="l">${S.base.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td></td></tr>
       ${quick.map(q => q.r ? `<tr><td>−${q.c}% (${lkr(q.r.B)})</td><td>${nf(q.r.net, 1)}%</td><td style="color:var(--bad)">${nf((q.r.net / S.base.net - 1) * 100, 1)}%</td><td>${q.r.kept.length}</td><td class="l">${q.r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</td><td><button class="btn sm" data-quick="${q.c}">Save</button></td></tr>` : '').join('')}
     </tbody></table></div>`) : ''}
   ${sel && cur ? compareHTML(cur, sel) : ''}
   ${panel('Export', 'choose an output for the current plan', `<div class="ex">
-    <button id="ex-csv"><span style="font-size:20px">📋</span><b>Spot plan</b><small>CSV · channel × program × slot × budget × spots</small></button>
-    <button id="ex-print"><span style="font-size:20px">🖨️</span><b>Print / PDF</b><small>Planner page, print-ready</small></button>
-    <button id="ex-copy"><span style="font-size:20px">📝</span><b>Copy memo</b><small>Plain text for email or deck</small></button>
-    <button id="ex-data"><span style="font-size:20px">🗂️</span><b>Filtered data</b><small>CSV of the airings behind this plan</small></button></div>`)}`;
+    <button data-deck><b>Client deck</b><small>PowerPoint · 12 slides with rationale, charts and notes</small></button>
+    <button id="ex-csv"><b>Spot plan</b><small>CSV · channel × program × slot × budget × spots</small></button>
+    <button id="ex-print"><b>Print / PDF</b><small>Planner page, print-ready</small></button>
+    <button id="ex-copy"><b>Copy memo</b><small>Plain text for email or deck</small></button>
+    <button id="ex-data"><b>Filtered data</b><small>CSV of the airings behind this plan</small></button></div>`)}`;
 }
 function compareHTML(a, b) {
   const ra = a.r, rb = b.r;
@@ -487,13 +492,13 @@ function compareHTML(a, b) {
   const ma = new Map(ra.chs.map(c => [c.ch, c.w])), mb = new Map(rb.chs.map(c => [c.ch, c.w]));
   new Set([...ma.keys(), ...mb.keys()]).forEach(c => {
     const x = ma.get(c) || 0, y = mb.get(c) || 0;
-    if (!x) ch.push(`<li><span class="ic ok">＋</span><span>Adds ${esc(chName(c))} at ${nf(y * 100, 0)}%</span></li>`);
+    if (!x) ch.push(`<li><span class="ic ok">+</span><span>Adds ${esc(chName(c))} at ${nf(y * 100, 0)}%</span></li>`);
     else if (!y) ch.push(`<li><span class="ic wa">−</span><span>Removes ${esc(chName(c))} (was ${nf(x * 100, 0)}%)</span></li>`);
     else if (Math.abs(y - x) >= .02) ch.push(`<li><span class="ic ${y > x ? 'ok' : 'wa'}">${y > x ? '↑' : '↓'}</span><span>${esc(chName(c))} ${nf(x * 100, 0)}% → ${nf(y * 100, 0)}%</span></li>`);
   });
   const pa = new Set(ra.items.map(x => x.ch + '||' + x.p)), pb = new Set(rb.items.map(x => x.ch + '||' + x.p));
   const add = [...pb].filter(k => !pa.has(k)), rem = [...pa].filter(k => !pb.has(k));
-  if (add.length) ch.push(`<li><span class="ic ok">＋</span><span>Programs added: ${add.map(k => esc(pn(k.split('||')[1]))).join(', ')}</span></li>`);
+  if (add.length) ch.push(`<li><span class="ic ok">+</span><span>Programs added: ${add.map(k => esc(pn(k.split('||')[1]))).join(', ')}</span></li>`);
   if (rem.length) ch.push(`<li><span class="ic wa">−</span><span>Programs dropped: ${rem.map(k => esc(pn(k.split('||')[1]))).join(', ')}</span></li>`);
   if (!ch.length) ch.push(`<li><span class="ic in">i</span><span>Same channels and programs; only the numbers differ.</span></li>`);
   return `<div class="grid g2">${panel(`Compare: current vs "${esc(b.name)}"`, '', `<table><thead><tr><th>Metric</th><th>Current</th><th>${esc(b.name)}</th><th>Difference</th></tr></thead><tbody>
@@ -603,7 +608,7 @@ function renderDetail() {
   body.innerHTML = `
     <div class="inl" style="margin-bottom:12px">
       <button class="btn sm pri" data-apply-x>Filter dashboard to this</button>
-      ${progKey ? `<button class="btn sm" data-lock="${esc(progKey)}">${S.P.lock.includes(progKey) ? 'Unlock from plan' : '🔒 Lock in plan'}</button><button class="btn sm" data-excl="${esc(progKey)}">${S.P.excl.includes(progKey) ? 'Restore to plan' : '✕ Exclude from plan'}</button>` : ''}
+      ${progKey ? `<button class="btn sm" data-lock="${esc(progKey)}">${S.P.lock.includes(progKey) ? 'Unlock from plan' : 'Lock in plan'}</button><button class="btn sm" data-excl="${esc(progKey)}">${S.P.excl.includes(progKey) ? 'Restore to plan' : 'Exclude from plan'}</button>` : ''}
       ${inPlan ? `<span class="tag anchor">In plan · ${nf(inPlan.k * 100, 1)}% · ${roleTag(inPlan.role)}</span>` : ''}
       <button class="btn sm" data-ai="${esc('Tell me about ' + fTitle(f) + ': is it worth buying, and when?')}">Ask AI about this</button>
     </div>
@@ -667,7 +672,7 @@ function renderDrawer() {
     b.innerHTML = `<div class="drop" id="drop"><b>Drop an Excel or CSV file here</b><p>Needed columns: Channel, Date, Start, Program, TVR.<br>Also used: Day, End, Duration, Category, TVR Share %, Reach %.</p><button class="btn pri" data-pick>Choose file</button></div>
       <div class="status ${m && m.err ? 'err' : ''}" role="status" aria-live="polite">${!m ? '<b>No data loaded yet</b>' : m.err ? esc(m.err) : `<b>${esc(m.name)}</b>${m.demo ? ' <span class="tag">demo</span>' : ''}<dl><dt>Rows loaded</dt><dd>${ni(S.ROWS.length)}${m.skip ? ' (' + ni(m.skip) + ' skipped)' : ''}</dd><dt>Date period</dt><dd>${fmtDate(S.SPAN[0])} to ${fmtDate(S.SPAN[1])}</dd><dt>Channels</dt><dd>${S.CH.length}</dd><dt>Categories</dt><dd>${S.CATS.length}</dd>${m.at ? `<dt>Loaded</dt><dd>${new Date(m.at).toLocaleString()}</dd>` : ''}</dl>`}</div>
       <p style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-demo>Load demo data</button>${S.ROWS.length ? '<button class="btn danger" id="clearData">Remove my data from this browser</button>' : ''}</p>
-      <p class="hint">🔒 Files are read in your browser and saved only in this browser (IndexedDB). Nothing is uploaded to the server, and other users cannot see your data. Clearing your browser's site data also removes it.</p>`;
+      <p class="hint">Files are read in your browser and saved only in this browser (IndexedDB). Nothing is uploaded to the server, and other users cannot see your data. Clearing your browser's site data also removes it.</p>`;
     bindDrop($('#drop'));
     return;
   }
@@ -818,6 +823,16 @@ function saveActionScenario(a, label) {
 }
 function setAIMode() { const t = $('#aiMode'); t.textContent = S.aiOn ? 'Gemini' : 'Offline planner'; t.className = 'tag ' + (S.aiOn ? 'anchor' : ''); t.title = S.aiOn ? 'Model: ' + S.aiModel : 'Server has no GEMINI_API_KEY. Rule-based answers from your data.'; }
 
+async function exportDeck(btn) {
+  if (!S.cur) { toast('Nothing to export: the plan is empty'); return; }
+  if (btn.disabled) return;
+  btn.disabled = true;
+  toast(S.aiOn ? 'Building deck, Planner AI is writing the rationale…' : 'Building deck…');
+  try { const r = await buildDeck(S, simulate); toast('Deck downloaded' + (r.ai ? ' (AI rationale)' : '')); }
+  catch (e) { toast('Deck export failed: ' + e.message); }
+  finally { btn.disabled = false; }
+}
+
 /* ---------- events ---------- */
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b && S.ROWS.length) setTab(b.dataset.tab); });
 $('#filterBtn').onclick = () => openDrawer(S.ROWS.length ? 'filters' : 'upload');
@@ -840,6 +855,7 @@ document.addEventListener('click', e => {
   const t = e.target;
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
+  if ((el = t.closest('[data-deck]'))) { exportDeck(el); return; }
   if ((el = t.closest('[data-demo]'))) { loadDemo(); return; }
   if (t.closest('#clearData')) {
     if (!confirm('Remove the loaded data, scenarios and plan settings from this browser?')) return;

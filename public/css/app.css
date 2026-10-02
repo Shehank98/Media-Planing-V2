@@ -135,6 +135,7 @@ th.sort:hover{color:var(--ink)}
 .ib{border:0;background:none;color:var(--accent);padding:2px 5px;border-radius:5px;font-weight:600}
 .ib:hover{background:var(--soft)}
 .ib.on{color:var(--accent-ink);background:var(--accent)}
+.ib.x{color:var(--bad)}
 .ib.x.on{background:var(--bad);color:#fff}
 
 /* controls */
@@ -215,7 +216,7 @@ button.hr:hover{color:var(--accent)}
 .delta.up{color:var(--good)}.delta.dn{color:var(--bad)}
 .scc .acts{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
 .scc.new{border:2px dashed var(--line);align-items:center;justify-content:center;text-align:center;color:var(--muted);min-height:170px;background:none}
-.ex{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.ex{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
 .ex button{border:1px solid var(--line);border-radius:10px;padding:12px;text-align:center;background:var(--panel)}
 .ex button:hover{border-color:var(--accent)}
 .ex b{display:block;font-size:13px;margin-top:4px}
@@ -297,6 +298,7 @@ button.hr:hover{color:var(--accent)}
 .feat div{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
 .feat b{display:block;margin-bottom:3px}
 .feat span{color:var(--muted)}
+.pico{width:22px;height:22px;stroke:var(--good);flex:none}
 .priv{display:flex;gap:10px;align-items:flex-start;background:color-mix(in srgb,var(--good) 10%,var(--panel));border:1px solid color-mix(in srgb,var(--good) 35%,var(--line));border-radius:10px;padding:12px 14px}
 
 .empty{margin:40px auto;text-align:center;color:var(--muted);max-width:360px}
