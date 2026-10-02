@@ -40,6 +40,8 @@ Every chart bar, heatmap cell, table row and insight card opens a **detail drawe
 
 ### Models used
 - **Channels** are short-listed on 0.6 × avg Reach % + 0.4 × avg TVR (or picked manually). The same score sets each channel's budget share (or type your own fixed shares). Spots are bought within each channel's budget, then topped up until the next spot no longer fits: first more spots on programmes already in the basket, then the channel's next best programmes one at a time (tagged Top-up).
+- **Day placement** (Flighting, default "Best day, split overlaps"): each spot goes on the programme's best-rated air day; if a same-hour programme with audience overlap at or above the limit (default 0.50, from the Duplication factors) is already on that day, the next best day is used. Roadblock and stagger are still available.
+- **Duplication by time belt** (Planner): per hour of the plan, reach added up vs different people, % duplicated, and whether each high-overlap pair was kept on different days.
 - **Tiers:** eligible programs (avg TVR at or above "Ignore programs below TVR", default 0.5) are ranked by average TVR. Tier 1 = at or above the 75th percentile, Tier 3 = below the 25th, Tier 2 in between (both editable). Presets: Reach 65/35/0, Balanced 45/35/20, Frequency 30/40/30.
 - **Optimiser:** buys one spot at a time where it adds the most new net reach per rupee (weighted by steadiness = mean ÷ std. dev.). Order: locked programs, fixed channel shares and daypart minimums, each tier up to its budget, then leftover. Caps: spots per program per week, programs per channel per tier, daypart maximums.
 - **Cost per spot** = max(minimum spot rate, CPRP × TVR × length/30).

@@ -17,7 +17,7 @@ const nextMonday = () => { const d = new Date(); d.setDate(d.getDate() + ((8 - d
 const DEFAULT_P = {
   budget: 10000000, nCh: 4, nProg: 2, cut: 0, cprp: 25000, spotLen: 30, minRate: 15000, target: 0, chMode: 'auto', chPick: [], split: {}, lock: [], excl: [],
   strategy: 'balanced', tiers: [45, 35, 20], tp1: 75, tp3: 25, minTvrPlan: .5, capWk: 3, dpMin: [0, 0, 50, 0], dpMax: [10, 20, 100, 15],
-  weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'roadblock', repQ: 40,
+  weeks: 4, start: nextMonday(), end: '', perDay: 1, pacing: 'even', same: 'bestday', dupThr: .5, pv: 2, repQ: 40,
   creatives: [{ name: 'Creative A', dur: 30, share: 100 }], rates: {}, disc: {}, sscl: 2.5, vat: 18
 };
 const S = {
@@ -32,13 +32,15 @@ const S = {
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
   fv: 'weeks', sched: null, SCH: { ch: null }, SD: { h: null, sdDays: 'all', sdScope: 'plan' }, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
-  chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false
+  chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false, XP: new Set()
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
 // Older saved plans: derive the campaign end date and creatives.
 if (!S.P.end) S.P.end = campaignDays(S.P).end;
 if (!Array.isArray(S.P.creatives) || !S.P.creatives.length) S.P.creatives = [{ name: 'Creative A', dur: S.P.spotLen || 30, share: 100 }];
 ['rates', 'disc'].forEach(k => { if (!S.P[k] || typeof S.P[k] !== 'object') S.P[k] = {}; });
+// Older saved plans used roadblock by default: move them to best-day placement once.
+if (!S.P.pv) { if (S.P.same === 'roadblock') S.P.same = 'bestday'; S.P.pv = 2; }
 const mixText = P => { const m = creativeMix(P); return m.map(c => `${c.name} ${c.dur}s${m.length > 1 ? ' (' + nf(c.w * 100, 0) + '%)' : ''}`).join(', '); };
 S.getD = getD;
 const charts = {};
@@ -51,6 +53,10 @@ const cv = ch => 'var(--c' + cIdx(ch) + ')';
 const dot = ch => `<i class="dot" style="background:${cv(ch)}"></i>`;
 const xa = f => `data-x="${esc(JSON.stringify(f))}"`;
 const panel = (t, s, body, extra = '', pb = '') => `<div class="panel"><div class="ph"><h3>${t}</h3>${s ? `<span class="s">${s}</span>` : ''}${extra ? `<span class="push">${extra}</span>` : ''}</div><div class="pb ${pb}">${body}</div></div>`;
+// Expandable panel: shows a short preview until opened; open state is remembered per session.
+const xpanel = (id, t, s, body, extra = '') => `<div class="panel xp ${S.XP.has(id) ? 'open' : ''}" data-xp="${id}"><div class="ph"><h3>${t}</h3>${s ? `<span class="s">${s}</span>` : ''}<span class="push">${extra}<button class="btn sm" data-xpt="${id}" aria-expanded="${S.XP.has(id)}">${S.XP.has(id) ? 'Collapse' : 'Expand'}</button></span></div><div class="pb">${body}</div><div class="xp-fade"></div></div>`;
+// Hide the Expand button when the content already fits.
+function xsync() { requestAnimationFrame(() => document.querySelectorAll('.view.on .xp').forEach(p => { const b = p.querySelector('.pb'); if (b.offsetParent) p.classList.toggle('short', b.scrollHeight <= 250); })); }
 const kp = (l, v, s, cls = '') => `<div class="kpi ${cls}"><span>${l}</span><b>${v}</b><small title="${esc(String(s).replace(/<[^>]+>/g, ''))}">${s}</small></div>`;
 const seg = (k, obj, opts) => `<div class="seg" data-seg="${k}">${opts.map(o => `<button data-v="${o[0]}" class="${obj[k] === o[0] ? 'on' : ''}">${o[1]}</button>`).join('')}</div>`;
 const stdTag = (ci, n) => { const s = steadiness(ci, n); return `<span class="std ${s.cls}">${s.label}${n >= 2 ? ' · ' + nf(ci, 1) : ''}</span>`; };
@@ -95,6 +101,8 @@ function applyFilters() {
   S.DPAGE = 0;
   recalc(); chrome(); renderActive(); renderAICtx();
 }
+// Overlap factor between two programmes: the within-channel factor, or the channel pair's factor.
+const progDup = (a, b) => a.ch === b.ch ? S.DINTRA : getD(a.ch, b.ch);
 function recalc() {
   S.plan = S.F.length ? planCalc(S.F, S.P) : null;
   if (!S.plan || !S.plan.items.length) { S.base = S.cur = null; S.health = []; return; }
@@ -102,7 +110,7 @@ function recalc() {
   S.cur = S.P.cut > 0 ? scen(S.plan, 1 - S.P.cut / 100, S.P, getD, S.DINTRA) : S.base;
   if (S.P.cut > 0) { const ks = new Set(S.cur.kept.map(x => x.key)); S.cur.dropped = S.base.kept.filter(x => !ks.has(x.key)); }
   if (!S.cur.kept.length) { S.base = S.cur = null; S.health = []; S.sched = null; return; }
-  S.sched = buildSchedule(S.cur, S.P);
+  S.sched = buildSchedule(S.cur, S.P, progDup);
   S.health = healthChecks(S.F, S.plan, S.cur, S.P, getD);
 }
 function simulate(patch, fsPatch) {
@@ -401,25 +409,26 @@ function vPlan(el) {
           <p class="hint" style="margin-top:-6px">${campaignDays(P).days.length} days · ${campaignDays(P).W} weeks</p>
           <label class="fld"><span>Max spots per programme per day</span><select data-p="perDay">${[1, 2, 3].map(n => `<option value="${n}" ${+P.perDay === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
           <div class="fld"><span>Pacing</span>${seg('pacing', P, [['even', 'Even (drip)'], ['burst', 'Burst'], ['pulse', 'Pulse']])}</div>
-          <div class="fld"><span>Same-hour spots on rival channels</span>${seg('same', P, [['roadblock', 'Roadblock'], ['stagger', 'Stagger']])}</div>
-          <p class="hint">${P.same === 'roadblock' ? 'Roadblock: rival channels at the same hour on the same night. One viewer cannot watch both, so this reaches more different people.' : 'Stagger: rival same-hour spots on different nights. The same viewers see the ad more often (frequency).'}</p>
+          <div class="fld"><span>Which days get the spots</span>${seg('same', P, [['bestday', 'Best day, split overlaps'], ['roadblock', 'Roadblock'], ['stagger', 'Stagger']])}</div>
+          ${P.same === 'bestday' ? `<label class="fld"><span>Keep apart when overlap is at least</span><input type="number" data-p="dupThr" min="0" max="1" step="0.05" value="${P.dupThr ?? .5}"></label>` : ''}
+          <p class="hint">${P.same === 'bestday' ? 'Best day: each spot goes on the programme\'s highest-rated air day. If a same-hour programme with high audience overlap (Duplication tab factors) is already on that day, the next best day is used, so shared viewers are not hit twice on one day.' : P.same === 'roadblock' ? 'Roadblock: rival channels at the same hour on the same night. One viewer cannot watch both, so this reaches more different people.' : 'Stagger: rival same-hour spots on different nights. The same viewers see the ad more often (frequency).'}</p>
         </details>
       </div></div>
     </div>
     <div class="col">
       <div class="grid g2">
         <div class="panel"><div class="ph"><h3>Estimated reach</h3></div><div class="pb" id="pl-net"></div></div>
-        <div class="panel"><div class="ph"><h3>Plan health check</h3></div><div class="pb"><ul class="health" id="pl-health"></ul></div></div>
+        ${xpanel('health', 'Plan health check', '<span id="hl-sum"></span>', '<ul class="health" id="pl-health"></ul>')}
       </div>
-      <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
       <div class="panel"><div class="ph"><h3>Channel split</h3><span class="s">budget per channel, filled with spots</span><span class="push"><button class="btn sm" id="pl-adj">${S.editSplit ? 'Done' : 'Fix channel shares'}</button></span></div><div class="pb" id="pl-split"></div></div>
       <div class="panel"><div class="ph"><h3>Programme basket</h3><span class="s" id="bk-sum"></span></div><div class="pb" id="pl-basket"></div></div>
+      <div class="panel"><div class="ph"><h3>Duplication by time belt</h3><span class="s">same viewers counted twice, per hour of the plan</span><span class="push"><button class="link" data-tab-go="dup">Duplication tab</button></span></div><div class="pb" id="pl-belt"></div></div>
       <div class="panel"><div class="ph"><h3>Weekly flighting</h3><span class="s" id="fl-sub"></span><span class="push">${seg('fv', S, [['weeks', 'By week'], ['days', 'Day plan']])}<button class="btn sm" id="fl-csv">Export schedule</button></span></div><div class="pb" id="pl-flight"></div></div>
-    </div>
-    <div class="col">
-      <div class="panel"><div class="ph"><h3>Planner memo</h3><span class="s">auto-written from the numbers</span><span class="push"><button class="link" id="pl-copy">Copy</button></span></div><div class="pb memo" id="pl-memo"></div></div>
-      <div class="panel"><div class="ph"><h3>Reach build</h3><span class="s">net reach as channels are added</span></div><div class="pb"><div class="chart sm"><canvas id="c-build"></canvas></div></div></div>
-      <div class="panel"><div class="ph"><h3>Competing slots</h3><span class="s">${P.same === 'roadblock' ? 'roadblocked on the same nights' : 'staggered across nights'}</span></div><div class="pb" id="pl-comp" style="max-height:300px;overflow:auto"></div></div>
+      <div class="grid g2">
+        <div class="panel"><div class="ph"><h3>Tier pyramid</h3><span class="s">target vs actual share of spend</span></div><div class="pb" id="pl-tier"></div></div>
+        <div class="panel"><div class="ph"><h3>Reach build</h3><span class="s">net reach as channels are added</span></div><div class="pb"><div class="chart sm"><canvas id="c-build"></canvas></div><p class="hint">The large orange dot is your plan. Where the line goes flat, an extra channel adds few new people.</p></div></div>
+      </div>
+      ${xpanel('memo', 'Planner memo', 'auto-written from the numbers', '<div class="memo" id="pl-memo"></div>', '<button class="link" id="pl-copy">Copy</button>')}
     </div>
   </div>
   <div class="nextbar"><span>Happy with the basket? Save it and stress-test it against budget changes.</span><button class="btn pri" data-tab-go="scen">Next: Scenarios →</button></div>`;
@@ -431,7 +440,7 @@ function updatePlan() {
   if (S.plan && S.plan.thr) $('#l-thr').textContent = `In this brief: Tier 1 averages ≥ ${nf(S.plan.thr.t1, 2)} TVR, Tier 3 < ${nf(S.plan.thr.t3, 2)} TVR. ${S.plan.items.length} candidate programs.`;
   if (!A || !A.kept.length) {
     $('#pl-bar').innerHTML = ''; $('#pl-net').innerHTML = '<p class="muted">No spots could be bought. Add channels, lower the minimum TVR, or un-exclude programs.</p>';
-    ['#pl-health', '#pl-split', '#pl-basket', '#pl-memo', '#pl-comp', '#pl-tier', '#pl-flight'].forEach(s => $(s).innerHTML = ''); return;
+    ['#pl-health', '#pl-split', '#pl-basket', '#pl-memo', '#pl-belt', '#pl-tier', '#pl-flight'].forEach(s => $(s).innerHTML = ''); return;
   }
   const warn = S.health.filter(h => h.t === 'wa').length;
   const m = (l, v, cls = '', t = '') => `<div class="m ${cls}" title="${t}"><small>${l}</small><b>${v}</b></div>`;
@@ -442,7 +451,9 @@ function updatePlan() {
     <div class="flow"><div><b>${nf(A.gross, 1)}%</b><small>Gross reach</small></div><i>−</i><div><b>${nf(A.gross - A.net, 1)} pts</b><small>Same viewers</small></div><i>=</i><div><b style="color:var(--accent)">${nf(A.net, 1)}%</b><small>Net reach</small></div></div>
     <div class="flow" style="grid-template-columns:1fr 1fr 1fr"><div><b>${nf(A.r3, 1)}%</b><small>Reach 3+</small></div><div><b>${nf(A.freq, 1)}x</b><small>Avg frequency</small></div><div><b>${nf(A.eff, 2)}</b><small>Net pts per LKR 1M</small></div></div>
     <p class="hint">Reach 3+ = reached at least three times, the usual effective-frequency goal. Duplication and repeat-spot reach are planning assumptions (Duplication tab).${P.target ? ` Target ${P.target}%: ${A.net >= P.target ? '<b style="color:var(--good)">met</b>' : '<b style="color:var(--bad)">not met</b>'}.` : ''}</p>`;
-  $('#pl-health').innerHTML = S.health.map(h => `<li><span class="ic ${h.t}">${ICON[h.t]}</span><span>${h.m}</span></li>`).join('');
+  const order = { wa: 0, in: 1, ok: 2 };
+  $('#pl-health').innerHTML = [...S.health].sort((a, b) => (order[a.t] ?? 1) - (order[b.t] ?? 1)).map(h => `<li><span class="ic ${h.t}">${ICON[h.t]}</span><span>${h.m}</span></li>`).join('');
+  $('#hl-sum').innerHTML = warn ? `<b style="color:var(--heat)">${warn} to check</b> · ${S.health.length} notes` : `all clear · ${S.health.length} notes`;
   // Tier pyramid
   const thr = A.thr || { t1: 0, t3: 0 };
   const band_ = t => t === 1 ? `avg TVR ≥ ${nf(thr.t1, 2)}` : t === 3 ? `avg TVR < ${nf(thr.t3, 2)}` : `${nf(thr.t3, 2)} – ${nf(thr.t1, 2)}`;
@@ -462,14 +473,55 @@ function updatePlan() {
   renderBasket();
   renderFlight();
   $('#pl-memo').innerHTML = memo(A, base);
-  const cp = competing(S.F, A.chs.map(c => c.ch), 8);
-  $('#pl-comp').innerHTML = cp.length ? cp.map(o => `<div class="flag"><b>${band(o.h)}</b>${o.l.slice(0, 4).map(x => `<span class="sub">${dot(x.ch)}${esc(chName(x.ch))}: ${esc(pn(x.p))}, TVR ${nf(x.m, 1)}</span>`).join('')}</div>`).join('') : '<p class="muted">No hour has two plan channels airing programs.</p>';
+  renderBelts();
+  xsync();
   const n = Math.min(S.plan.cs.length, 9), pts = [];
   for (let k = 1; k <= n; k++) { const r = simulate({ chMode: 'auto', nCh: k, split: {} }); pts.push(r ? +r.net.toFixed(1) : 0); }
   mkChart('c-build', {
     type: 'line', data: { labels: pts.map((_, i) => (i + 1) + ' ch'), datasets: [{ label: 'Net reach %', data: pts, borderColor: css('--accent'), backgroundColor: css('--accent'), pointRadius: pts.map((_, i) => i + 1 === A.chs.length ? 6 : 3), pointBackgroundColor: pts.map((_, i) => i + 1 === A.chs.length ? css('--heat') : css('--accent')), tension: .3 }] },
     options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => ` ${c.raw}% net reach with top ${c.dataIndex + 1} channel${c.dataIndex ? 's' : ''}` } } }, scales: { x: { grid: { display: false } }, y: { beginAtZero: true } } }
   });
+}
+// Duplication by time belt: for each hour of the plan, added-up reach vs different people,
+// and whether high-overlap programme pairs were kept on different days.
+function renderBelts() {
+  const el = $('#pl-belt'), A = S.cur, Sc = S.sched;
+  if (!el || !A || !Sc) return;
+  const hrs = [...new Set(A.kept.map(x => x.hour))];
+  const belts = hrs.map(h => {
+    const its = A.kept.filter(x => x.hour === h), gross = its.reduce((a, x) => a + x.R, 0), net = unionOf(its, progDup);
+    return { h, its, gross, net, dup: Math.max(0, gross - net), bud: its.reduce((a, x) => a + x.bud, 0), pairs: Sc.pairs.filter(p => p.hour === h) };
+  }).sort((a, b) => a.h - b.h);
+  const multi = belts.filter(b => b.its.length > 1), single = belts.filter(b => b.its.length === 1);
+  const G = belts.reduce((a, b) => a + b.gross, 0), D = belts.reduce((a, b) => a + b.dup, 0);
+  const allP = Sc.pairs, apart = allP.filter(p => p.same === 0).length;
+  const thr = nf((P => P.dupThr ?? .5)(S.P), 2);
+  const sn = x => esc(pn(x.p).length > 24 ? pn(x.p).slice(0, 23) + '…' : pn(x.p));
+  const pairLine = p => {
+    const st = S.P.same !== 'bestday' ? `<span class="tag" title="On the same day ${p.same} times">Same day ${p.same}x</span>`
+      : p.same === 0 ? '<span class="tag ok" title="Never on the same day">Apart</span>'
+      : `<span class="tag wa" title="${p.sharedDays <= 2 ? 'Both air on only a few of the same weekdays, so no other day was free' : 'No other air day was free in some weeks'}">Same day ${p.same}x</span>`;
+    return `<div class="pr"><span>${dot(p.a.ch)}${sn(p.a)} <span class="muted">&amp;</span> ${dot(p.b.ch)}${sn(p.b)}<span class="sub">overlap ${nf(p.d, 2)}</span></span>${st}</div>`;
+  };
+  const card = b => {
+    const pct = b.gross > 0 ? b.dup / b.gross * 100 : 0;
+    return `<div class="bc"><button class="hd" data-belt="${b.h}" title="Open this hour in the Duplication tab"><b style="white-space:nowrap">${band(b.h)}</b><span class="muted" style="text-align:right">${b.its.length} programmes · LKR ${lkr(b.bud).replace('LKR ', '')}</span></button>
+      <div class="bar" title="Different people ${nf(b.net, 1)}% · counted twice ${nf(b.dup, 1)} pts"><i style="width:${(b.net / (b.gross || 1) * 100).toFixed(1)}%;background:var(--accent)"></i><i style="width:${pct.toFixed(1)}%;background:var(--heat)"></i></div>
+      <span class="sub">Added up ${nf(b.gross, 1)}% → <b>${nf(b.net, 1)}% different people</b> · <b style="color:var(--heat)">${nf(pct, 0)}% duplicated</b></span>
+      ${b.pairs.map(pairLine).join('') || '<span class="sub">No pair above the overlap limit.</span>'}</div>`;
+  };
+  el.innerHTML = `<div class="kpis k4">
+      ${kp('Time belts in the plan', belts.length, `${multi.length} with 2+ programmes`)}
+      ${kp('Reach added up', nf(G, 1) + '%', 'programmes counted separately')}
+      ${kp('Duplicated', nf(G > 0 ? D / G * 100 : 0, 0) + '%', `${nf(D, 1)} pts are the same viewers`)}
+      ${kp('High-overlap pairs apart', allP.length ? `${apart} of ${allP.length}` : 'none', `overlap ≥ ${thr}, same hour`, 'hl')}
+    </div>
+    ${multi.length ? `<div class="belt" style="margin-top:12px">${multi.map(card).join('')}</div>` : '<p class="muted" style="margin-top:10px">Every time belt has a single programme, so there is no overlap inside a belt.</p>'}
+    ${single.length ? `<p class="hint">One programme only (no overlap inside the belt): ${single.map(b => `${band(b.h)} ${sn(b.its[0])}`).join(', ')}.</p>` : ''}
+    ${howRead(`the bar is each time belt's reach added up. <b>Teal</b> = different people, <b>orange</b> = the same viewers counted twice (they watch more than one of these programmes on different nights). Click a time belt to see its programme × programme overlap.`)}
+    ${meaning(S.P.same === 'bestday'
+      ? `Each spot goes on the programme's <b>best-rated air day</b>. When two programmes in the same time belt share many viewers (overlap ≥ ${thr}), the second one goes to <b>its next best day</b>, so the shared viewers are not hit twice on one day. A pair still meets on the same day only when there is no other air day left that week (for example two weekend-only shows). Change this under Plan settings → Flighting.`
+      : S.P.same === 'roadblock' ? 'Roadblock is on: same-hour programmes run on the same nights. Switch Flighting to "Best day, split overlaps" to keep high-overlap pairs on different days.' : 'Stagger is on: same-hour programmes on rival channels run on different nights.')}`;
 }
 // Program basket: compact, grouped by channel (or a flat list by spend), with tier filters.
 const ICO_LOCK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
@@ -531,7 +583,7 @@ function renderFlight() {
   if (S.fv === 'days') {
     const rows = Sc.rows;
     el.innerHTML = `<div class="tw" style="max-height:420px;overflow:auto"><table><thead><tr><th>Date</th><th class="l">Day</th><th class="l">Time band</th><th class="l">Channel</th><th class="l">Program</th><th>Tier</th><th class="l">Creative</th><th>Spots</th><th>Cost</th></tr></thead><tbody>${rows.slice(0, 400).map(r => `<tr><td>${fmtDate(r.date)}</td><td class="l">${r.day.slice(0, 3)}</td><td class="l">${band(r.hour)}</td><td class="l">${dot(r.ch)}${esc(chName(r.ch))}</td><td class="l">${esc(pn(r.p))}</td><td>${tierTag(r.tier)}</td><td class="l">${esc(Sc.mix[r.cr].name)} · ${r.dur}s</td><td>${r.spots}</td><td>${lkr(r.cost).replace('LKR ', '')}</td></tr>`).join('')}</tbody></table></div>
-      <p class="hint">${Sc.clashes} night${Sc.clashes === 1 ? ' has' : 's have'} rival channels in the same hour (${P.same === 'roadblock' ? 'roadblock, by design' : 'kept low by staggering'}). Days follow each program's air days in the data.</p>`;
+      <p class="hint">${Sc.clashes} night${Sc.clashes === 1 ? ' has' : 's have'} rival channels in the same hour (${P.same === 'roadblock' ? 'roadblock, by design' : P.same === 'bestday' ? `best-day placement; ${Sc.pairs.filter(p => !p.same).length} of ${Sc.pairs.length} high-overlap pairs kept on different days` : 'kept low by staggering'}). Days follow each program's air days in the data.</p>`;
     return;
   }
   el.innerHTML = `<div class="chart sm"><canvas id="c-flight"></canvas></div>
@@ -1259,6 +1311,8 @@ document.addEventListener('click', e => {
   if (t.closest('#p-reset')) { const keep = S.P.budget; S.P = Object.assign({}, DEFAULT_P, { budget: keep }); savePlan(); recalc(); vPlan($('#v-plan')); return; }
   if (t.closest('#pl-save') || t.closest('#sc-save')) { const n = prompt('Name this scenario', 'Scenario ' + String.fromCharCode(65 + S.scenarios.length % 26)); if (n !== null) { saveScenario(n, S.cur); if (S.TAB === 'scen') vScen($('#v-scen')); } return; }
   if (t.closest('#pl-csv') || t.closest('#ex-csv')) { const c = curAsScen(); if (c) download('spot-plan-' + new Date().toISOString().slice(0, 10) + '.csv', planCSV(c)); return; }
+  if (t.closest('[data-belt]')) { S.SD.h = +t.closest('[data-belt]').dataset.belt; S.SD.sdScope = 'plan'; S.SD.sdDays = 'all'; const tb = $('#tabs [data-tab=dup]'); if (tb) tb.click(); return; }
+  if (t.closest('[data-xpt]')) { const id = t.closest('[data-xpt]').dataset.xpt, b = t.closest('[data-xpt]'), on = !S.XP.has(id); on ? S.XP.add(id) : S.XP.delete(id); const pnl = b.closest('.xp'); pnl.classList.toggle('open', on); b.textContent = on ? 'Collapse' : 'Expand'; b.setAttribute('aria-expanded', on); if (!on) pnl.scrollIntoView({ block: 'nearest' }); return; }
   if (t.closest('#pl-copy') || t.closest('#ex-copy')) {
     const txt = S.TAB === 'plan' ? memoText() : (() => { const d = document.createElement('div'); d.innerHTML = memo(S.cur, S.base); return d.innerText; })();
     navigator.clipboard.writeText(txt).then(() => toast('Memo copied'), () => toast('Copy failed')); return;

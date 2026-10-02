@@ -227,7 +227,11 @@ export function planCalc(rows, P) {
       hour: modeHour(g.hc), days: DAYS.filter(d => g.dc[d]), cat: g.mxr.cat, dur: g.sD / g.n, locked: lock.has(c.ch + '||' + g.k)
     }));
     const chRows = rows.filter(r => r.ch === c.ch);
-    pg.forEach(x => { const pr = chRows.filter(r => r.p === x.p); x.from = modeOf(pr.map(r => r.s)); x.to = modeOf(pr.map(r => r.e)); x.pattern = dayPattern(x.days); });
+    pg.forEach(x => {
+      const pr = chRows.filter(r => r.p === x.p); x.from = modeOf(pr.map(r => r.s)); x.to = modeOf(pr.map(r => r.e)); x.pattern = dayPattern(x.days);
+      // Average TVR on each weekday it airs, used to put spots on the programme's best days.
+      x.dayT = {}; x.days.forEach(d => { const dr = pr.filter(r => r.day === d); x.dayT[d] = dr.reduce((a, r) => a + r.tvr, 0) / (dr.length || 1); });
+    });
     let cand = pg.filter(x => x.n >= 2); if (cand.length < 3) cand = pg;
     cand = cand.filter(x => !excl.has(x.key) && x.mean > 0 && x.mean >= floor);
     pg.forEach(x => { if (x.locked && !cand.includes(x)) cand.push(x); });
@@ -374,11 +378,20 @@ export function reachAtLeast(net, freq, n = 3) {
 
 // Schedule: spreads each programme's spots over the campaign weeks by the pacing weights
 // (never above its weekly capacity), places them on real air dates (at most perDay a day),
-// then rotates creatives by their shares. Roadblock puts rival same-hour spots on the same
-// dates (more different people); stagger puts them on different dates (more frequency).
-export function buildSchedule(A, P) {
+// then rotates creatives by their shares. Day choice (P.same):
+//  bestday   - each spot goes on the programme's best-rated air day; if a programme in the same
+//              hour with high audience overlap (>= P.dupThr) already has a spot that day, the
+//              next best day is used, so the shared viewers are not hit twice on one day.
+//  roadblock - rival same-hour spots on the same dates; stagger - on different dates.
+// dupFn(a, b) gives the overlap factor between two programmes (0-1).
+export function buildSchedule(A, P, dupFn) {
   const cal = A.cal || campaignDays(P), W = cal.W, wts = pacingWeights(P.pacing, W);
   const perDay = Math.max(1, Math.round(P.perDay || 1)), mix = creativeMix(P);
+  const mode = P.same || 'bestday', thr = P.dupThr ?? .5;
+  const dfn = dupFn || ((a, b) => a.ch === b.ch ? .8 : defD(a.ch, b.ch));
+  // High-overlap partners: other plan programmes in the same hour whose overlap factor is at or above the threshold.
+  const partners = new Map(A.kept.map(x => [x.key, A.kept.filter(y => y !== x && y.hour === x.hour && dfn(x, y) >= thr)]));
+  const onDay = new Map(); // date -> set of programme keys with a spot that day
   const occ = new Map(), units = [], grid = [];
   A.kept.forEach((x, pi) => {
     const capW = x.capW || Array(W).fill(Math.max(1, P.capWk || 3));
@@ -394,10 +407,16 @@ export function buildSchedule(A, P) {
       const dates = cal.days.filter(d => d.w === w && (!x.days.length || x.days.includes(d.day)));
       const used = {};
       for (let i = 0; i < n; i++) {
-        const sc = d => { const o = occ.get(d.iso + '|' + x.hour); const k = o ? [...o].filter(c => c !== x.ch).length : 0; return P.same === 'stagger' ? -k : k; };
-        const d = dates.filter(d => (used[d.iso] || 0) < perDay).sort((a, b) => (used[a.iso] || 0) - (used[b.iso] || 0) || sc(b) - sc(a) || (a.iso < b.iso ? -1 : 1))[0];
+        const sc = d => { const o = occ.get(d.iso + '|' + x.hour); const k = o ? [...o].filter(c => c !== x.ch).length : 0; return mode === 'stagger' ? -k : k; };
+        const clash = d => { const on = onDay.get(d.iso); return on ? partners.get(x.key).filter(y => on.has(y.key)).length : 0; };
+        const tv = d => (x.dayT && x.dayT[d.day]) || 0;
+        const free = dates.filter(d => (used[d.iso] || 0) < perDay);
+        const d = (mode === 'bestday'
+          ? free.sort((a, b) => (used[a.iso] || 0) - (used[b.iso] || 0) || clash(a) - clash(b) || tv(b) - tv(a) || (a.iso < b.iso ? -1 : 1))
+          : free.sort((a, b) => (used[a.iso] || 0) - (used[b.iso] || 0) || sc(b) - sc(a) || (a.iso < b.iso ? -1 : 1)))[0];
         if (!d) break;
         used[d.iso] = (used[d.iso] || 0) + 1;
+        if (!onDay.has(d.iso)) onDay.set(d.iso, new Set()); onDay.get(d.iso).add(x.key);
         const k = d.iso + '|' + x.hour; if (!occ.has(k)) occ.set(k, new Set()); occ.get(k).add(x.ch);
         units.push({ x, d });
       }
@@ -427,7 +446,15 @@ export function buildSchedule(A, P) {
   const byCr = mix.map((c, i) => ({ ...c, spots: gCnt[i], cost: rows.filter(r => r.cr === i).reduce((a, r) => a + r.cost, 0) }));
   const spent = rows.reduce((a, r) => a + r.cost, 0), rateCard = rows.reduce((a, r) => a + r.rateCard, 0);
   const clashes = [...occ.values()].filter(s => s.size > 1).length;
-  return { rows, grid, weeks, wts, clashes, start: cal.start, end: cal.end, days: cal.days, mix, byCr, spent, rateCard, placed: units.length };
+  // High-overlap pairs in the same hour: on how many days both ran (same day) vs only one of them.
+  const pairs = [];
+  A.kept.forEach((a, i) => A.kept.forEach((b, j) => {
+    if (j <= i || a.hour !== b.hour) return; const d = dfn(a, b); if (d < thr) return;
+    let same = 0; onDay.forEach(set => { if (set.has(a.key) && set.has(b.key)) same++; });
+    const sharedDays = a.days.filter(x => b.days.includes(x)).length;
+    pairs.push({ a, b, d, hour: a.hour, same, sharedDays });
+  }));
+  return { rows, grid, weeks, wts, clashes, pairs, mode, thr, start: cal.start, end: cal.end, days: cal.days, mix, byCr, spent, rateCard, placed: units.length };
 }
 
 // Hours where two or more plan channels air programs head to head.

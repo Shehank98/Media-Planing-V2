@@ -452,7 +452,7 @@ export async function buildDeck(S, simulate, opts = {}) {
   T_(s, 'Booking rules', { x: 9.45, y: 1.95, w: 3.3, h: 0.32, fontSize: 13, bold: true, color: C.navy });
   bullets(s, [
     `At most ${P.capWk} spots per programme per week, so the same viewers are not over-exposed.`,
-    P.same === 'roadblock' ? 'Rival channels at the same hour run on the same nights. One person cannot watch both, so this reaches more people.' : 'Rival same-hour spots run on different nights, so the same people see the ad more often.',
+    P.same === 'bestday' ? 'Each spot runs on the programme\'s best-rated day. When two programmes at the same hour share many viewers, they run on different days so the same people are not hit twice in one evening.' : P.same === 'roadblock' ? 'Rival channels at the same hour run on the same nights. One person cannot watch both, so this reaches more people.' : 'Rival same-hour spots run on different nights, so the same people see the ad more often.',
     'Spots run on the days each programme actually airs.'
   ], { x: 9.45, y: 2.35, w: W - M - 9.7, h: 2.5, fontSize: 11.5 });
   soWhat(s, 9.2, 5.05, W - M - 9.2, 1.85, T.soWhat.flight);
