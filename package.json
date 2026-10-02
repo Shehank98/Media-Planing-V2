@@ -1,0 +1,15 @@
+{
+  "name": "tv-media-planner",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser-only TV media planning dashboard: upload ratings data, explore, drill down, build plans, ask Planner AI.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}
