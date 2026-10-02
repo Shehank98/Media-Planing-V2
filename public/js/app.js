@@ -1144,7 +1144,7 @@ document.addEventListener('click', e => {
       S.P[k] = el.dataset.v; if (k === 'strategy') S.P.tiers = [...STRATS[el.dataset.v].t];
       savePlan(); recalc(); vPlan($('#v-plan')); return;
     }
-    if (k === 'sdDays' || k === 'sdScope') { S.SD[k] = el.dataset.v; S.SD.h = null; killCharts('c-'); vDup($('#v-dup')); return; }
+    if (k === 'sdDays' || k === 'sdScope') { S.SD[k] = el.dataset.v; killCharts('c-'); vDup($('#v-dup')); return; }
     if (k === 'view') { S.BK.view = el.dataset.v; S.BK.all = false; renderBasket(); return; }
     if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
     if (k === 'chMode') { S.P.chMode = el.dataset.v; S.P.split = {}; if (S.P.chMode === 'manual' && !S.P.chPick.length && S.cur) S.P.chPick = S.cur.chs.map(c => c.ch); savePlan(); recalc(); vPlan($('#v-plan')); return; }
