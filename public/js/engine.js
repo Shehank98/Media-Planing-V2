@@ -373,15 +373,29 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   };
 }
 
-// Effective reach: % reached at least n times, assuming the frequency among reached
-// viewers follows a zero-truncated Poisson with the plan's average frequency.
+// Effective reach: % reached at least n times. Uses the negative binomial (NBD) exposure
+// model, the standard TV reach / frequency model: its shape k is solved so the model gives
+// exactly this reach (1 - P(0)) at this GRP (mean exposures m = net x freq / 100). Low k means
+// a skewed spread (heavy viewers see the ad many times, light viewers once). If the reach is
+// above what even an even (Poisson) spread allows, the zero-truncated Poisson is used instead.
 export function reachAtLeast(net, freq, n = 3) {
   if (!(net > 0) || !(freq > 1)) return n <= 1 ? net : 0;
-  let lo = 1e-6, hi = 60;
-  for (let i = 0; i < 60; i++) { const m = (lo + hi) / 2; if (m / (1 - Math.exp(-m)) < freq) lo = m; else hi = m; }
-  const l = (lo + hi) / 2; let cdf = 0, t = Math.exp(-l);
-  for (let k = 0; k < n; k++) { cdf += t; t *= l / (k + 1); }
-  return net * (1 - cdf) / (1 - Math.exp(-l));
+  if (n <= 1) return net;
+  const r = Math.min(.999, net / 100), m = r * freq, p0 = 1 - r;
+  const P0 = k => Math.pow(1 + m / k, -k); // falls as k grows, towards exp(-m)
+  let pmf;
+  if (p0 > Math.exp(-m) + 1e-9) {
+    let lo = 1e-6, hi = 1e6;
+    for (let i = 0; i < 200; i++) { const k = Math.sqrt(lo * hi); if (P0(k) > p0) lo = k; else hi = k; }
+    const k = Math.sqrt(lo * hi), q = m / (k + m);
+    pmf = [p0]; for (let x = 1; x < n; x++) pmf.push(pmf[x - 1] * (k + x - 1) / x * q);
+  } else {
+    let lo = 1e-6, hi = 60;
+    for (let i = 0; i < 60; i++) { const l = (lo + hi) / 2; if (l / (1 - Math.exp(-l)) < freq) lo = l; else hi = l; }
+    const l = (lo + hi) / 2, sc = r / (1 - Math.exp(-l));
+    pmf = [p0]; let t = Math.exp(-l); for (let x = 1; x < n; x++) { t *= l / x; pmf.push(t * sc); }
+  }
+  return Math.max(0, 100 * (1 - pmf.reduce((a, b) => a + b, 0)));
 }
 
 // Schedule: spreads each programme's spots over the campaign weeks by the pacing weights
@@ -441,7 +455,8 @@ export function buildSchedule(A, P, dupFn) {
     mix.forEach((c, i) => {
       if (!(c.w > 0)) return;
       const cost = u.x.net30 * c.dur / 30;
-      const sc = (gVal[i] + cost) / c.w / (gT + cost) + .5 * (ps[i] + c.dur) / c.w / (pT + c.dur);
+      // Money first (plan-wide fair share); within-programme airtime only breaks near-ties.
+      const sc = (gVal[i] + cost) / c.w + .02 * (gT / (pT + c.dur || 1)) * (ps[i] + c.dur) / c.w;
       if (sc < bs - 1e-12) { bs = sc; best = i; }
     });
     if (best < 0) best = 0;

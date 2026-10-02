@@ -148,8 +148,14 @@ export async function exportScheduleXlsx(M, o) {
       const rr = c0r + i; f('A' + rr, l, { bold: true, fill: GREEN, border: true });
       ws.mergeCells(`B${rr}:D${rr}`); f('B' + rr, { formula: fm, result: v }, { fmt: '#,##0.00', h: 'right', bold: true, fill: GREEN, border: true });
     });
-    f('A' + (c0r + 3), 'GRP = TVR × spots. NGRP = GRP × duration ÷ 30. CPRP = Media Value ÷ GRP; NCPRP = Media Value ÷ NGRP. Rate card rates in italics are estimates (CPRP × TVR); replace them with the channel rate card. Negotiated rate = rate card × (1 − discount in B4).', { italic: true, color: 'FF5F6B7A', size: 9 });
-    ws.pageSetup.printArea = `A1:${col(lastCol)}${c0r + 3}`;
+    // Estimated reach on this channel (planning model values).
+    const R0 = c0r + 3, RH = ['Reach 1+', 'Reach 2+', 'Reach 3+', 'Reach 4+', 'Reach 5+'];
+    ws.mergeCells(`A${R0}:B${R0}`); f('A' + R0, `Estimated reach on ${chName(C.ch)} (% of target audience)`, { bold: true, color: 'FFFFFFFF', fill: TEAL, border: true });
+    RH.forEach((h, i) => { f('A' + (R0 + 1 + i), h, { bold: i === 0 || i === 2, border: true }); f('B' + (R0 + 1 + i), C.reach.at[i] / 100, { fmt: '0.0%', h: 'right', border: true, bold: i === 0 || i === 2 }); });
+    f('A' + (R0 + 6), 'Average frequency', { border: true }); f('B' + (R0 + 6), C.reach.freq, { fmt: '0.0"x"', h: 'right', border: true });
+    f('A' + (R0 + 7), 'Channel alone, before duplication with other channels. Planning estimate (NBD model fitted to reach and GRP).', { italic: true, color: 'FF5F6B7A', size: 9 });
+    f('A' + (c0r + 12), 'GRP = TVR × spots. NGRP = GRP × duration ÷ 30. CPRP = Media Value ÷ GRP; NCPRP = Media Value ÷ NGRP. Rate card rates in italics are estimates (CPRP × TVR); replace them with the channel rate card. Negotiated rate = rate card × (1 − discount in B4).', { italic: true, color: 'FF5F6B7A', size: 9 });
+    ws.pageSetup.printArea = `A1:${col(lastCol)}${c0r + 12}`;
     chanRefs.push({ name, ch: C.ch, T, C });
   }
 
@@ -197,7 +203,22 @@ export async function exportScheduleXlsx(M, o) {
     const rr = aT + 2 + i; cover.mergeCells(`B${rr}:D${rr}`); cf('B' + rr, l, { bold: true, size: 11, fill: 'FFA9D08E', border: true });
     cf('E' + rr, { formula: fm, result: v }, { bold: true, size: 11, fmt: '#,##0.00', fill: 'FFA9D08E', border: true, h: 'right' }); cover.mergeCells(`E${rr}:F${rr}`);
   });
-  cf('B' + (aT + 5), `Estimated net reach ${o.net.toFixed(1)}% · reached 3+ times ${o.r3.toFixed(1)}% (planning estimates from the ratings data).`, { size: 10, color: 'FF5F6B7A' });
+  // Estimated reach: campaign (each person once) and each channel on its own.
+  const r0 = aT + 6, RH = ['Reach 1+', 'Reach 2+', 'Reach 3+', 'Reach 4+', 'Reach 5+', 'Avg frequency', 'GRP'];
+  cover.mergeCells(`B${r0 - 1}:H${r0 - 1}`); cf('B' + (r0 - 1), 'ESTIMATED REACH (% of target audience)', { bold: true, size: 12, color: 'FFFFFFFF', fill: TEAL });
+  cover.mergeCells(`B${r0}:C${r0}`); cf('B' + r0, '', { fill: NAVY, border: true });
+  ['D', 'E', 'F', 'G', 'H', 'I', 'J'].forEach((k, i) => cf(k + r0, RH[i], { bold: true, size: 11, color: 'FFFFFFFF', fill: NAVY, border: true, h: 'center' }));
+  const rrow = (rr, lbl, x, bold) => {
+    cover.mergeCells(`B${rr}:C${rr}`); cf('B' + rr, lbl, { size: 11, bold, border: true, fill: bold ? SOFT : undefined });
+    x.at.forEach((v, i) => cf(String.fromCharCode(68 + i) + rr, v / 100, { size: 11, fmt: '0.0%', border: true, h: 'center', bold: bold || i === 2, fill: bold ? SOFT : undefined }));
+    cf('I' + rr, x.freq, { size: 11, fmt: '0.0"x"', border: true, h: 'center', fill: bold ? SOFT : undefined, bold });
+    cf('J' + rr, x.grp, { size: 11, fmt: '0.00', border: true, h: 'center', fill: bold ? SOFT : undefined, bold });
+  };
+  rrow(r0 + 1, 'Campaign total (net)', M.tot.reach, true);
+  M.chans.forEach((c, i) => rrow(r0 + 2 + i, chName(c.ch), c.reach, false));
+  const rn = r0 + 2 + M.chans.length;
+  cf('B' + (rn + 1), 'Reach 1+ = % who see the ad at least once; 3+ = at least three times. Channel rows are each channel alone; they add to more than the total because viewers watch several channels.', { size: 10, color: 'FF5F6B7A' });
+  cf('B' + (rn + 2), 'Planning estimates from the ratings data (programme reach, repeat-spot and duplication factors, negative binomial (NBD) spread of exposures fitted to reach and GRP). Average frequency = GRP ÷ reach.', { size: 10, color: 'FF5F6B7A' });
 
   // Spot list: one row per date x programme x creative, for booking and checking.
   const sl = wb.addWorksheet('Spot list', { views: [{ state: 'frozen', ySplit: 1 }] });

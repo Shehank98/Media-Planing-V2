@@ -49,7 +49,7 @@ Every chart bar, heatmap cell, table row and insight card opens a **detail drawe
 - **Optimiser:** buys one spot at a time where it adds the most new net reach per rupee (weighted by steadiness = mean ÷ std. dev.). Order: locked programs, fixed channel shares and daypart minimums, each tier up to its budget, then leftover. Caps: spots per program per week, programs per channel per tier, daypart maximums.
 - **Cost per spot** = max(minimum spot rate, CPRP × TVR × length/30).
 - **Reach:** each repeat spot of a program adds a set % (default 40%) of the previous spot's new reach. Programs on one channel are combined with an intra-channel overlap (0.8); channels with the duplication matrix: `A + B − overlap`, overlap = `A·B/100 + d·(min(A,B) − A·B/100)`.
-- **Reach 3+** assumes a zero-truncated Poisson frequency spread at the plan's average frequency.
+- **Reach 2+ to 5+** (incl. Reach 3+) use the negative binomial (NBD) exposure model, fitted so it matches the estimated net reach and GRP (average frequency = GRP ÷ reach). Shown for the campaign and each channel on the Schedule tab and in the Excel cover and channel sheets.
 - **Flighting:** spots spread over the weeks by pacing weights (even, burst = descending, pulse = alternate weeks), never above the weekly cap, on each program's air days. Roadblock puts rival same-hour spots on the same nights; stagger spreads them.
 
 ## Run locally

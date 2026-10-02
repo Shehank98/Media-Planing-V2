@@ -1,7 +1,7 @@
 import {
   DAYS, DS, DIMS, DPS, daypart, esc, nf, ni, hl, band, chName, pn, fmtDate, dayDiff, lkr,
   parseRows, grp, avgT, avgR, avgS, ciOf, steadiness, summarize, mkGetD, dkey, netReach, uni,
-  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV, STRATS, buildSchedule, campaignDays, creativeMix, avgLen
+  channelStats, planCalc, scen, competing, healthChecks, insights, toCSV, STRATS, buildSchedule, campaignDays, creativeMix, avgLen, reachAtLeast
 } from './engine.js';
 import { exportScheduleXlsx } from './xlsx.js';
 import { makeDemoRows } from './demo.js';
@@ -662,9 +662,26 @@ function scheduleModel() {
   const T = k => chans.reduce((a, c) => a + c[k], 0);
   const tot = { net: T('net'), rcT: T('rcT'), spots: T('spots'), sscl: T('sscl'), vat: T('vat'), total: T('total'), grp: T('grp'), ngrp: T('ngrp'), sr: T('sr'), srSscl: T('srSscl'), srVat: T('srVat'), srTotal: T('srTotal') };
   tot.cprp = tot.grp > 0 ? tot.net / tot.grp : 0; tot.ncprp = tot.ngrp > 0 ? tot.net / tot.ngrp : 0;
+  // Estimated reach (planning model): reach 1+ is the channel / campaign net reach after
+  // duplication; average frequency = GRP / reach; n+ reach uses the negative binomial (NBD)
+  // exposure model fitted to that reach and GRP.
+  const rb = (R, g) => { const fq = R > 0 ? g / R : 0; return { R, freq: fq, grp: g, at: [1, 2, 3, 4, 5].map(n => reachAtLeast(R, fq, n)) }; };
+  chans.forEach(c => { const ac = A.chs.find(x => x.ch === c.ch); c.reach = rb(ac ? ac.R : 0, c.grp); });
+  tot.reach = rb(A.net, tot.grp);
   // Assets (creatives) across all channels: paid value and share of the paid value.
   const assets = Sc.mix.map((m, i) => { const paid = chans.reduce((a, c) => a + (c.sections.find(x => x.i === i)?.paid || 0), 0); return { m, i, paid, ratio: tot.net > 0 ? paid / tot.net : 0 }; });
   return { chans, days: Sc.days, mix: Sc.mix, sscl, vat, srP, tot, assets };
+}
+// Reach table: whole campaign (each person counted once) and each channel on its own.
+function reachTbl(M) {
+  const r = (lbl, x, cls = '') => `<tr class="${cls}"><td class="l">${lbl}</td>${x.at.map((v, i) => `<td>${i === 0 ? '<b>' : ''}${nf(v, 1)}%${i === 0 ? '</b>' : ''}</td>`).join('')}<td>${nf(x.freq, 1)}x</td><td>${nf(x.grp, 1)}</td></tr>`;
+  const T = M.tot.reach;
+  return `<div class="kpis k4">${kp('Net reach 1+', nf(T.at[0], 1) + '%', 'saw the ad at least once', 'hl')}${kp('Reach 3+', nf(T.at[2], 1) + '%', 'saw it 3 or more times (effective reach)')}${kp('Average frequency', nf(T.freq, 1) + 'x', 'times each reached person sees it')}${kp('GRP', nf(T.grp, 1), 'TVR × spots, all channels')}</div>
+    <div class="tw" style="margin-top:12px"><table><thead><tr><th class="l"></th><th>Reach 1+</th><th>2+</th><th>3+</th><th>4+</th><th>5+</th><th>Avg frequency</th><th>GRP</th></tr></thead><tbody>
+    ${r('<b>Campaign total</b> <span class="sub">each person counted once</span>', T, 'tot')}
+    ${M.chans.map(c => r(dot(c.ch) + esc(chName(c.ch)), c.reach)).join('')}</tbody></table></div>
+    ${howRead('<b>Reach 1+</b> = % of the audience who see the ad at least once; <b>3+</b> = at least three times. Channel rows are each channel on its own; they add up to more than the total because many people watch several channels (duplication). Average frequency = GRP ÷ reach.')}
+    <p class="hint">Estimates from the ratings file: programme reach (Reach %, or TVR × 1.4), repeat-spot and duplication factors from the Duplication tab, and the negative binomial (NBD) exposure model for 2+ to 5+ (fitted to the reach and GRP, so heavy viewers see the ad more often than light viewers). Use them to compare plans, not as measured results.</p>`;
 }
 function vSchedule(el) {
   const A = S.cur, P = S.P;
@@ -693,7 +710,7 @@ function vSchedule(el) {
   <div class="vhead"><div><h2>Booking schedule</h2><p>Day-by-day spots per channel, by creative, ready to send to channels. Same layout as the Excel export.</p></div>
     <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule</button></span></div>
   ${A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
-  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
+  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Net reach 1+', nf(M.tot.reach.at[0], 1) + '%', 'hl')}${sm('Reach 3+', nf(M.tot.reach.at[2], 1) + '%')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
   <div class="grid g2">
     ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
       <label class="fld"><span>Client</span><input type="text" data-meta="client" value="${esc(meta.client || '')}"></label>
@@ -709,6 +726,7 @@ function vSchedule(el) {
       <tr class="tot"><td>Total</td><td></td><td>${M.tot.spots}</td><td>${nf(M.tot.grp, 1)}</td><td>${L(M.tot.cprp)}</td><td><b>${L(M.tot.net)}</b></td><td>${L(M.tot.total)}</td></tr></tbody></table></div>
       <p class="hint">Changing a rate or discount changes spot costs, so the plan is re-optimised.</p>`)}
   </div>
+  ${panel('Estimated reach', 'of this schedule · % of the target audience', reachTbl(M), '', '')}
   <div class="panel"><div class="ph"><h3>Channel sheet</h3><span class="push"><div class="chips">${M.chans.map(c => `<button class="chip ${c.ch === C.ch ? 'on' : ''}" data-sch-ch="${esc(c.ch)}">${esc(chName(c.ch))} · ${c.spots}</button>`).join('')}</div></span></div>
     <div class="pb"><div class="tw sched-wrap"><table class="sched"><thead>${head}</thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div>
     <div class="tw" style="margin-top:10px"><table class="asset taxt"><thead><tr><th class="l"></th><th>Investment 100%</th><th>${srL}</th></tr></thead><tbody>

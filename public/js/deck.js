@@ -523,7 +523,7 @@ export async function buildDeck(S, simulate, opts = {}) {
       ['Spot buying', `One spot at a time, wherever it adds the most new viewers per rupee, weighted by ratings stability. Max ${P.capWk} per programme per week; daypart limits applied.`, 'Avoids putting all the money into a few expensive shows.'],
       ['Cost', `Cost per spot = the higher of LKR ${ni(P.minRate || 0)} or LKR ${ni(P.cprp)} × rating × duration ÷ 30, less the channel discount.`, 'An estimate until channel rate cards are confirmed.'],
       ['Reach', 'Each person counted once across channels using overlap factors; repeat spots add fewer new viewers each time.', 'Gives a realistic, not inflated, reach figure.'],
-      ['Reach 3+', 'Estimated from reach and average frequency using a standard statistical spread (Poisson).', 'A common measure of effective repetition.']],
+      ['Reach 3+', 'Estimated from reach and average frequency using the standard TV frequency model (negative binomial), which allows for heavy and light viewers.', 'A common measure of effective repetition.']],
     tblOpt({ x: M, y: 1.8, w: CW, colW: [1.8, 6.0, CW - 7.8], fontSize: 11 }));
     s.addNotes(src);
 
