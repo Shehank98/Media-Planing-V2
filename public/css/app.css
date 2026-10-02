@@ -491,3 +491,7 @@ table.taxt{margin-left:auto}
 fieldset.autof{border:0;margin:0;padding:0;min-width:0}
 fieldset.autof:disabled{opacity:.55}
 .planbar .m.bad b{color:var(--bad)}
+.bsug{margin-top:4px;padding:8px 10px;border-radius:8px;background:color-mix(in srgb,var(--accent) 7%,var(--panel));display:flex;flex-direction:column;gap:6px;font-size:12px}
+.bsug .h{font-size:12px;color:var(--accent)}
+.bsug .bs{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:start}
+.bsug .bs .tag{white-space:nowrap}

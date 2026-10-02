@@ -489,6 +489,63 @@ function updatePlan() {
 }
 // Duplication by time belt: for each hour of the plan, added-up reach vs different people,
 // and whether high-overlap programme pairs were kept on different days.
+// Suggestions to cut duplication inside one time belt. Programme reach after k spots uses the same
+// repeat-spot model as the planner; overlap uses the Duplication tab factors. Each suggestion is a
+// basket change (remove and/or add programmes) the planner can apply with one click.
+function beltSuggest(b) {
+  const A = S.cur, P = S.P, its = b.its; if (!A || its.length < 1) return [];
+  const q = Math.min(.95, Math.max(0, (P.repQ ?? 40) / 100)), lenF = avgLen(P) / 30;
+  const reachK = (y, k) => y.rp * (1 - Math.pow(q, k)) / (1 - q), U = l => l.length ? unionOf(l, progDup) : 0;
+  const inB = new Set(A.basketKeys || []), planCh = new Set(A.chs.map(c => c.ch)), excl = new Set(P.excl || []);
+  const k0 = Math.max(1, Math.round(its.reduce((a, x) => a + x.spots, 0) / its.length));
+  const cands = S.plan.items.filter(y => y.hour === b.h && !inB.has(y.key) && !excl.has(y.key) && planCh.has(y.ch) && y.rp > 0);
+  const nm = x => `<b>${esc(pn(x.p))}</b> <span class="muted">(${esc(chName(x.ch).replace(' TV', ''))})</span>`;
+  const out = [], pts = v => nf(Math.abs(v), 1) + ' pts';
+  // Worth dropping only if the reach lost is small, or cheap: under half the plan's reach points per LKR 1M.
+  const eff = A.spent > 0 ? A.net / (A.spent / 1e6) : 0, cheapLoss = (loss, money) => loss <= 1.5 || loss / Math.max(1e-6, money / 1e6) < eff * .5;
+  // 1. Drop the programme whose viewers are mostly reached by the others already.
+  let drop = null;
+  if (its.length >= 2) its.forEach(x => {
+    const rest = its.filter(y => y !== x), loss = Math.max(0, b.net - U(rest)), uniq = x.R > 0 ? loss / x.R : 1;
+    if (uniq < .4 && cheapLoss(loss, x.bud) && (!drop || loss / x.bud < drop.loss / drop.x.bud)) drop = { x, rest, loss, uniq };
+  });
+  if (drop) out.push({ kind: 'Drop', html: `${nm(drop.x)}: only ${nf(drop.uniq * 100, 0)}% of its viewers are not reached by the others here. The belt keeps ${nf(b.net - drop.loss, 1)}% different people (−${pts(drop.loss)}) and LKR ${ni(Math.round(drop.x.bud))} goes to other spots.`, act: { excl: [drop.x.key] } });
+  // 2. Swap the most duplicated programme for one with less overlap.
+  const base = drop ? drop : its.length ? (() => { const x = [...its].sort((a, c) => a.R - c.R)[0]; return { x, rest: its.filter(y => y !== x) }; })() : null;
+  if (base && cands.length) {
+    let sw = null;
+    cands.forEach(y => {
+      const k = base.x.spots, R = reachK(y, k), net = U([...base.rest, { R, ch: y.ch }]), gain = net - b.net, cost = y.net30 * lenF * k - base.x.bud;
+      if (gain > .3 && cost <= base.x.bud * .25 && (!sw || gain > sw.gain)) sw = { y, gain, cost, net };
+    });
+    if (sw) out.push({ kind: 'Swap', html: `${nm(base.x)} → ${nm(sw.y)} at ${base.x.spots} spot${base.x.spots > 1 ? 's' : ''}: <b>+${pts(sw.gain)}</b> different people in this belt (${nf(sw.net, 1)}%), ${sw.cost > 0 ? 'about LKR ' + ni(Math.round(sw.cost)) + ' more' : 'LKR ' + ni(Math.round(-sw.cost)) + ' less'}.`, act: { excl: [base.x.key], add: [sw.y.key] } });
+  }
+  // 3. Fewer channels in this belt: keep the channels that bring the most different people per rupee.
+  const chs = [...new Set(its.map(x => x.ch))];
+  if (chs.length >= 3) {
+    let best = null;
+    chs.forEach(c => {
+      const gone = its.filter(x => x.ch === c), rest = its.filter(x => x.ch !== c), loss = Math.max(0, b.net - U(rest)), saved = gone.reduce((a, x) => a + x.bud, 0);
+      if (loss / b.net < .12 && cheapLoss(loss, saved) && (!best || loss / saved < best.loss / best.saved)) best = { c, gone, rest, loss, saved };
+    });
+    if (best) out.push({ kind: 'Fewer channels', html: `Use only ${[...new Set(best.rest.map(x => x.ch))].map(c => `<b>${esc(chName(c).replace(' TV', ''))}</b>`).join(' + ')} in this belt (drop ${esc(chName(best.c))}'s ${best.gone.length > 1 ? best.gone.length + ' programmes' : 'programme'}): keeps ${nf(b.net - best.loss, 1)}% different people (−${pts(best.loss)}) and frees LKR ${ni(Math.round(best.saved))}.`, act: { excl: best.gone.map(x => x.key) } });
+  }
+  // 4. Best programme mix for this belt: same number of programmes, picked for the most new people per rupee.
+  if (cands.length) {
+    const pool = [...its.map(x => ({ x, R: x.R, ch: x.ch, cost: x.bud, cur: true })), ...cands.map(y => ({ x: y, R: reachK(y, k0), ch: y.ch, cost: y.net30 * lenF * k0, cur: false }))];
+    const pick = [];
+    while (pick.length < its.length) {
+      const u0 = U(pick); let bestP = null, bv = -Infinity;
+      pool.forEach(o => { if (pick.includes(o)) return; const v = (U([...pick, o]) - u0) / Math.max(1, o.cost); if (v > bv) { bv = v; bestP = o; } });
+      if (!bestP) break; pick.push(bestP);
+    }
+    const mixNet = U(pick), mixCost = pick.reduce((a, o) => a + o.cost, 0), add = pick.filter(o => !o.cur), rem = its.filter(x => !pick.some(o => o.x === x));
+    if (add.length && (mixNet > b.net + .5 || (mixNet >= b.net - .2 && mixCost < b.bud * .85)))
+      out.push({ kind: 'Best mix', html: `${pick.map(o => nm(o.x) + (o.cur ? '' : ' <span class="tag ok">new</span>')).join(', ')}. About <b>${nf(mixNet, 1)}%</b> different people vs ${nf(b.net, 1)}% now, for LKR ${ni(Math.round(mixCost))} vs ${ni(Math.round(b.bud))}.`, act: { excl: rem.map(x => x.key), add: add.map(o => o.x.key) } });
+  }
+  const seen = new Set();
+  return out.filter(o => { const k = JSON.stringify(o.act); if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 3);
+}
 function renderBelts() {
   const el = $('#pl-belt'), A = S.cur, Sc = S.sched;
   if (!el || !A || !Sc) return;
@@ -513,7 +570,8 @@ function renderBelts() {
     return `<div class="bc"><button class="hd" data-belt="${b.h}" title="Open this hour in the Duplication tab"><b style="white-space:nowrap">${band(b.h)}</b><span class="muted" style="text-align:right">${b.its.length} programmes · LKR ${lkr(b.bud).replace('LKR ', '')}</span></button>
       <div class="bar" title="Different people ${nf(b.net, 1)}% · counted twice ${nf(b.dup, 1)} pts"><i style="width:${(b.net / (b.gross || 1) * 100).toFixed(1)}%;background:var(--accent)"></i><i style="width:${pct.toFixed(1)}%;background:var(--heat)"></i></div>
       <span class="sub">Added up ${nf(b.gross, 1)}% → <b>${nf(b.net, 1)}% different people</b> · <b style="color:var(--heat)">${nf(pct, 0)}% duplicated</b></span>
-      ${b.pairs.map(pairLine).join('') || '<span class="sub">No pair above the overlap limit.</span>'}</div>`;
+      ${b.pairs.map(pairLine).join('') || '<span class="sub">No pair above the overlap limit.</span>'}
+      ${(() => { const sg = beltSuggest(b); return `<div class="bsug"><b class="h">How to cut duplication here</b>${sg.length ? sg.map(o => `<div class="bs"><span class="tag">${o.kind}</span><span>${o.html}</span><button class="btn sm" data-belt-act="${esc(JSON.stringify(o.act))}">Apply</button></div>`).join('') : '<span class="sub">This belt is already well mixed: no change adds more different people for the money.</span>'}</div>`; })()}</div>`;
   };
   el.innerHTML = `<div class="kpis k4">
       ${kp('Time belts in the plan', belts.length, `${multi.length} with 2+ programmes`)}
@@ -523,7 +581,7 @@ function renderBelts() {
     </div>
     ${multi.length ? `<div class="belt" style="margin-top:12px">${multi.map(card).join('')}</div>` : '<p class="muted" style="margin-top:10px">Every time belt has a single programme, so there is no overlap inside a belt.</p>'}
     ${single.length ? `<p class="hint">One programme only (no overlap inside the belt): ${single.map(b => `${band(b.h)} ${sn(b.its[0])}`).join(', ')}.</p>` : ''}
-    ${howRead(`the bar is each time belt's reach added up. <b>Teal</b> = different people, <b>orange</b> = the same viewers counted twice (they watch more than one of these programmes on different nights). Click a time belt to see its programme × programme overlap.`)}
+    ${howRead(`the bar is each time belt's reach added up. <b>Teal</b> = different people, <b>orange</b> = the same viewers counted twice (they watch more than one of these programmes on different nights). Click a time belt to see its programme × programme overlap. <b>How to cut duplication here</b> suggests basket changes for that belt: <b>Drop</b> a programme whose viewers the others already reach, <b>Swap</b> one for a programme with less overlap, use <b>fewer channels</b>, or the <b>best mix</b> of programmes for the money. Effects are estimated for the belt; Apply re-runs the whole plan, and removed programmes can be restored under the basket.`)}
     ${meaning(S.P.same === 'bestday'
       ? `Each spot goes on the programme's <b>best-rated air day</b>. When two programmes in the same time belt share many viewers (overlap ≥ ${thr}), the second one goes to <b>its next best day</b>, so the shared viewers are not hit twice on one day. A pair still meets on the same day only when there is no other air day left that week (for example two weekend-only shows). Change this under Plan settings → Flighting.`
       : S.P.same === 'roadblock' ? 'Roadblock is on: same-hour programmes run on the same nights. Switch Flighting to "Best day, split overlaps" to keep high-overlap pairs on different days.' : 'Stagger is on: same-hour programmes on rival channels run on different nights.')}`;
@@ -1371,7 +1429,7 @@ function applyDraft() {
   savePlan(); recalc(); vPlan($('#v-plan'));
   if (S.P.autoOpt) { S.P.optSig = null; runOpt(true); } else toast('Plan settings applied');
 }
-const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], [data-bk-addk], [data-bk-rm], #v-plan [data-split], #pl-split-reset, [data-act]';
+const PLAN_EDIT = '#v-plan [data-preset], [data-lock], [data-excl], [data-unexcl], [data-bk-add], [data-bk-addk], [data-bk-rm], [data-belt-act], #v-plan [data-split], #pl-split-reset, [data-act]';
 function unfreezeIf(t) { if (S.P.frozen && t && t.closest && t.closest(PLAN_EDIT)) { S.P.frozen = null; savePlan(); document.querySelectorAll('#v-plan .frozen').forEach(e => e.remove()); } }
 ['click', 'change', 'input'].forEach(ev => document.addEventListener(ev, e => unfreezeIf(e.target), true));
 
@@ -1441,6 +1499,13 @@ document.addEventListener('click', e => {
     X.includes(k) ? X.splice(X.indexOf(k), 1) : (X.push(k), S.P.lock = S.P.lock.filter(x => x !== k));
     savePlan(); recalc(); if (S.TAB === 'plan') updatePlan(); if ($('#detail').classList.contains('on')) renderDetail();
     toast(X.includes(k) ? 'Removed from plan' : 'Restored to plan'); return;
+  }
+  if ((el = t.closest('[data-belt-act]'))) {
+    const a = JSON.parse(el.dataset.beltAct), ex = new Set(a.excl || []);
+    S.P.excl = [...new Set([...S.P.excl, ...ex])]; S.P.lock = S.P.lock.filter(k => !ex.has(k));
+    S.P.add = [...new Set([...(S.P.add || []).filter(k => !ex.has(k)), ...(a.add || [])])]; S.P.excl = S.P.excl.filter(k => !(a.add || []).includes(k));
+    S.P.frozen = null; savePlan(); recalc(); updatePlan();
+    toast(`Basket updated${ex.size ? ': ' + ex.size + ' removed (restore them under the basket)' : ''}${a.add && a.add.length ? ', ' + a.add.length + ' added' : ''}`); return;
   }
   if ((el = t.closest('[data-bk-addk]'))) { const k = el.dataset.bkAddk; S.P.add = [...new Set([...(S.P.add || []), k])]; S.P.excl = S.P.excl.filter(x => x !== k); S.P.frozen = null; savePlan(); recalc(); updatePlan(); toast('Added ' + pn(k.split('||')[1]) + ' to the basket'); return; }
   if ((el = t.closest('[data-bk-rm]'))) { S.P.add = (S.P.add || []).filter(k => k !== el.dataset.bkRm); savePlan(); recalc(); updatePlan(); toast('Taken out of the basket'); return; }
