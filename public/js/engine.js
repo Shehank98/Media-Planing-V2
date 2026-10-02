@@ -271,7 +271,11 @@ export function scen(plan, f, P, getD, dIntra, trace) {
   const mode = P.pmode || 'budget', G = Math.max(0, +P.grpT || 0) * f;
   if (mode === 'budget' || !(G > 0) || P.frozen) return Object.assign(scenCore(plan, f, P, getD, dIntra, trace), { mode: 'budget' });
   // GRP target and budget: buy until the GRP target is reached or the budget runs out.
-  if (mode === 'both') return Object.assign(scenCore(plan, f, P, getD, dIntra, trace, G), { mode, gT: G });
+  if (mode === 'both') {
+    const A = scenCore(plan, f, P, getD, dIntra, trace, G);
+    if (A.views >= G - 1e-6) A.chs.forEach(c => { if (c.gap >= 1) c.gapWhy = 'grp'; });
+    return Object.assign(A, { mode, gT: G });
+  }
   // GRP target only: start from an estimated budget (target x median cost per rating point), then
   // re-run with the money actually needed so channel, tier and daypart shares fit the real spend.
   const lenF = avgLen(P) / 30, cpp = plan.items.filter(x => x.mean > 0).map(x => x.net30 * lenF / x.mean).sort((a, b) => a - b);
@@ -282,7 +286,9 @@ export function scen(plan, f, P, getD, dIntra, trace) {
     else if (best) break; else B *= 1.5;
   }
   const A = best || last;
-  A.chs.forEach(c => { c.gap = 0; c.gapWhy = ''; });
+  // No fixed budget here: each channel's budget is its share of the money the target needs, and
+  // what is left on a channel is because buying stopped once the GRP target was reached.
+  if (A.views >= G - 1e-6) A.chs.forEach(c => { if (c.gap >= 1) c.gapWhy = 'grp'; });
   return Object.assign(A, { mode, gT: G, B: A.spent, unspent: 0, over: 0, eff: A.spent > 0 ? A.net / (A.spent / 1e6) : 0 });
 }
 // One spot-by-spot buy at a fixed budget; gT (optional) stops buying once the plan reaches that many GRP.
