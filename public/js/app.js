@@ -196,14 +196,6 @@ function vOverview(el) {
   el.innerHTML = `
   <div class="vhead"><div><h2>Market overview</h2><p>Click any bar, slice, row or card to drill down.</p></div></div>
   ${ins.length ? `<div class="ins">${ins.map(i => `<button class="insc ${i.cls} ${i.drill ? 'click' : ''}" ${i.drill ? xa(i.drill) : ''}><div class="big">${esc(i.big)}</div><div class="t">${esc(i.t)}</div></button>`).join('')}</div>` : ''}
-  <div class="kpis">
-    ${kp('Airings', ni(sm.n), ni(S.ROWS.length) + ' loaded in total')}
-    ${kp('Programs', ni(sm.progs), sm.chs + ' channels')}
-    ${kp('Average TVR', nf(sm.avgT, 2), 'per airing')}
-    ${kp('Peak TVR', nf(sm.pk.tvr, 1), esc(pn(sm.pk.p)) + ', ' + esc(chName(sm.pk.ch)))}
-    ${kp('Average reach', nf(sm.avgR, 2) + '%', 'per airing')}
-    ${kp('Days covered', dayDiff(S.FS.from, S.FS.to), fmtDate(S.FS.from) + ' – ' + fmtDate(S.FS.to))}
-  </div>
   <div class="grid g-ov">
     ${panel('Channel performance', 'average per airing · click a bar', '<div class="chart lg"><canvas id="c-ch"></canvas></div>')}
     ${panel('Top programs', 'by average TVR, min 2 airings · click a row', `<div class="tw" style="max-height:340px;overflow:auto"><table><thead><tr><th>Program</th><th>Avg TVR</th><th>Peak</th><th>Reach %</th><th>Airings</th><th>Steadiness</th></tr></thead><tbody>${q.map(g => { const [c, p] = g.k.split('||'); return `<tr class="click" ${xa({ ch: c, p })}><td><div class="pn" title="${esc(pn(p))}">${esc(pn(p))}</div><span class="sub">${dot(c)}${esc(chName(c))} · ${hl(g.mxr.h)}</span></td><td>${nf(avgT(g), 2)}</td><td>${nf(g.mx, 1)}</td><td>${nf(avgR(g), 1)}</td><td>${g.n}</td><td>${stdTag(ciOf(g), g.n)}</td></tr>`; }).join('')}</tbody></table></div>`)}
@@ -474,7 +466,7 @@ function updatePlan() {
     const why = sel && sel.manual ? 'Fixed share (yours)' : `Channel score ${nf((sel?.score || 0) * 100, 1)}: 0.6 reach share + 0.4 TVR share`;
     const left = A.fixed ? '' : c.gapWhy === 'cap' ? 'basket is full: add a programme' : c.gapWhy === 'daypart' ? 'daypart limit reached' : c.gapWhy === 'budget' ? 'total budget used' : c.gapWhy === 'spot' ? 'less than one spot' : '';
     return `<tr class="${rev || c.gapWhy === 'cap' ? 'warn' : ''}"><td><button class="nm ib" style="padding:0;color:var(--ink)" ${xa({ ch: c.ch })}>${dot(c.ch)}${esc(chName(c.ch))}</button></td><td>${S.editSplit ? `<input class="split-in" type="number" min="0" max="100" step="1" data-split="${esc(c.ch)}" value="${(c.allocW * 100).toFixed(0)}">` : `<b>${nf(c.allocW * 100, 1)}%</b>`}</td><td>${lkr(c.alloc).replace('LKR ', '')}</td><td><b>${lkr(c.bud).replace('LKR ', '')}</b></td><td>${lkr(c.gap).replace('LKR ', '')}${left ? `<span class="sub">${left}</span>` : ''}${c.gapWhy === 'cap' && c.suggest && c.suggest[0] && c.suggest[0].fits ? `<button class="link sub" data-bk-addk="${esc(c.suggest[0].key)}" title="Add the next best programme to this channel's basket">+ ${esc(pn(c.suggest[0].p))}</button>` : ''}</td><td>${c.progs.length}</td><td>${ni(c.spots)}</td><td>${nf(c.R, 1)}%</td><td class="l">${esc(why)}</td></tr>`;
-  }).join('')}</tbody></table></div><p class="hint">Each channel gets its share of the budget, and spots are added until the next spot would no longer fit. Programmes already in the basket get more spots first; if money is still left, the channel's next best programmes are added (marked Top-up in the basket).${S.editSplit ? ' Type a share to fix a channel; the other channels share the rest by score. <button class="link" id="pl-split-reset">Clear fixed shares</button>' : ''}</p>`;
+  }).join('')}</tbody></table></div><p class="hint">Each channel gets its share of the budget, and spots are added to its basket programmes until the next spot would no longer fit. If money is left because the basket is full, add the suggested next best programme from the basket.${S.editSplit ? ' Type a share to fix a channel; the other channels share the rest by score. <button class="link" id="pl-split-reset">Clear fixed shares</button>' : ''}</p>`;
   // Basket
   renderBasket();
   renderFlight();
