@@ -556,7 +556,7 @@ function vScen(el) {
     </tbody></table></div>`) : ''}
   ${sel && cur ? compareHTML(cur, sel) : ''}
   ${panel('Export', 'choose an output for the current plan', `<div class="ex">
-    <button data-deck><b>Client deck</b><small>PowerPoint · 14 slides with rationale, charts and notes</small></button>
+    <button data-deck><b>Client deck</b><small>PowerPoint · client-ready, plain-English commentary and speaker notes</small></button>
     <button id="ex-csv"><b>Spot plan</b><small>CSV · channel × program × slot × budget × spots</small></button>
     <button id="ex-print"><b>Print / PDF</b><small>Planner page, print-ready</small></button>
     <button id="ex-copy"><b>Copy memo</b><small>Plain text for email or deck</small></button>
@@ -901,14 +901,21 @@ function saveActionScenario(a, label) {
 }
 function setAIMode() { const t = $('#aiMode'); t.textContent = S.aiOn ? 'Gemini' : 'Offline planner'; t.className = 'tag ' + (S.aiOn ? 'anchor' : ''); t.title = S.aiOn ? 'Model: ' + S.aiModel : 'Server has no GEMINI_API_KEY. Rule-based answers from your data.'; }
 
-async function exportDeck(btn) {
+function exportDeck() {
   if (!S.cur) { toast('Nothing to export: the plan is empty'); return; }
-  if (btn.disabled) return;
-  btn.disabled = true;
-  toast(S.aiOn ? 'Building deck, Planner AI is writing the rationale…' : 'Building deck…');
-  try { const r = await buildDeck(S, simulate); toast('Deck downloaded' + (r.ai ? ' (AI rationale)' : '')); }
+  const m = lsGet('deckMeta', {});
+  $('#dk-client').value = m.client || ''; $('#dk-campaign').value = m.campaign || ''; $('#dk-by').value = m.by || '';
+  $('#dk-app').checked = m.appendix !== false; $('#dk-ai').checked = m.useAI !== false;
+  $('#dk-ai-row').style.display = S.aiOn ? '' : 'none';
+  $('#deckModal').hidden = false; setTimeout(() => $('#dk-client').focus(), 30);
+}
+async function runDeck() {
+  const o = { client: $('#dk-client').value, campaign: $('#dk-campaign').value, by: $('#dk-by').value, appendix: $('#dk-app').checked, useAI: S.aiOn && $('#dk-ai').checked };
+  lsSet('deckMeta', o);
+  const go = $('#dk-go'); go.disabled = true; go.textContent = o.useAI ? 'Writing commentary…' : 'Building…';
+  try { const r = await buildDeck(S, simulate, o); $('#deckModal').hidden = true; toast('Deck downloaded' + (r.ai ? ' (AI commentary)' : '')); }
   catch (e) { toast('Deck export failed: ' + e.message); }
-  finally { btn.disabled = false; }
+  finally { go.disabled = false; go.textContent = 'Create deck'; }
 }
 
 /* ---------- events ---------- */
@@ -925,15 +932,17 @@ $('#themeBtn').onclick = () => {
   document.documentElement.dataset.theme = dark ? 'light' : 'dark'; lsSet('theme', document.documentElement.dataset.theme);
 };
 $('#dtabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) { S.DT = b.dataset.dt; renderDrawer(); } });
+$('#deckForm').addEventListener('submit', e => { e.preventDefault(); runDeck(); });
 $('#aiForm').addEventListener('submit', e => { e.preventDefault(); const q = $('#aiQ').value; $('#aiQ').value = ''; ask(q); });
 $('#aiSugg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) ask(b.textContent); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closePanes(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closePanes(); $('#deckModal').hidden = true; } });
 
 document.addEventListener('click', e => {
   const t = e.target;
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
-  if ((el = t.closest('[data-deck]'))) { exportDeck(el); return; }
+  if ((el = t.closest('[data-deck]'))) { exportDeck(); return; }
+  if (t.closest('#dk-cancel') || t.id === 'deckModal') { $('#deckModal').hidden = true; return; }
   if ((el = t.closest('[data-demo]'))) { loadDemo(); return; }
   if (t.closest('#clearData')) {
     if (!confirm('Remove the loaded data, scenarios and plan settings from this browser?')) return;

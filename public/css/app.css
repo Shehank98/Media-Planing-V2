@@ -359,3 +359,10 @@ button.hr:hover{color:var(--accent)}
 }
 
 .brief td{white-space:normal}
+.modal{position:fixed;inset:0;background:rgba(8,14,20,.5);z-index:30;display:grid;place-items:center;padding:16px}
+.modal[hidden]{display:none}
+.mbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;width:min(460px,100%);box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.mbox h2{margin:0 0 4px;font-size:17px}
+.mbox p{margin:0 0 14px}
+.chk{display:flex;gap:8px;align-items:center;margin:6px 0}
+.macts{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}

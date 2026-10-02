@@ -22,7 +22,12 @@ A browser-only TV media planning dashboard. Upload a TV ratings export (Excel or
 Every chart bar, heatmap cell, table row and insight card opens a **detail drawer** (KPIs, trend, breakdown, airings) where you can drill further, filter the dashboard to it, or lock or exclude the program from the plan.
 
 ### Client deck (PowerPoint)
-"Export deck (PPTX)" on the Planner or Scenarios tab builds a 14-slide deck in the browser (pptxgenjs, loaded on demand from jsDelivr): title, executive summary, brief and approach, when the audience watches, channel strength, recommended split with a reason per channel, program basket, tier strategy, anchor programs, net reach after duplication, weekly flighting, budget scenarios, risks and next steps, methodology. Charts and tables are native and editable; every slide has speaker notes. With `GEMINI_API_KEY` set, Gemini drafts the headline, summary, per-channel reasons, risks and next steps; otherwise they are written from the plan numbers.
+"Export deck (PPTX)" (Planner or Scenarios tab) asks for client, campaign and "prepared by", then builds a client-ready deck in the browser (pptxgenjs, loaded on demand from jsDelivr). It is written for non-technical readers:
+- Cover, agenda, executive summary with the decision needed, and a plain-English glossary (TVR, reach, frequency, reach 3+, GRPs, duplication, daypart, tier) using examples from the plan.
+- Sections with divider slides: the audience (hours, days, channels), our recommendation (approach, channel split with a reason per channel, tier pyramid, programme selection, anchor programmes), reach and schedule (overlap diagram, how many channels, weekly booking calendar), budget options and risks (risk / why it matters / what we will do), next steps (dated timeline, decisions needed).
+- Every content slide has an action title, a "What this means" box and "How to read this" captions under charts; every slide has speaker notes.
+- Optional appendix: method, assumptions, full programme list.
+- Charts and tables are native and editable. With `GEMINI_API_KEY` set, Gemini can write the commentary; otherwise it is written from the plan numbers.
 
 ### Required columns
 `Channel, Date, Start, Program, TVR`. Optional: `Day, End, Duration, Category, TVR Share %, Reach %`. Times like `20:09`, `8:09 PM` and Excel time cells are all handled.
