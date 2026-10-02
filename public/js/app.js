@@ -33,7 +33,7 @@ const S = {
   DSORT: { k: 'tvr', d: -1 }, DPAGE: 0, DQ: '',
   X: [], XB: null,
   fv: 'weeks', sched: null, SCH: { ch: null }, SD: { h: null, sdDays: 'all', sdScope: 'plan' }, BK: { view: 'channel', tier: 'all', open: new Set(), all: false },
-  chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false, XP: new Set()
+  chat: [], aiOn: false, aiModel: null, busy: false, editSplit: false, XP: new Set(), OPT: { open: false, goal: 'bal', running: false, done: 0, total: 0, res: null }
 };
 const getD = (a, b) => mkGetD(S.DUP)(a, b);
 // Older saved plans: derive the campaign end date and creatives.
@@ -106,6 +106,7 @@ function applyFilters() {
 // Overlap factor between two programmes: the within-channel factor, or the channel pair's factor.
 const progDup = (a, b) => a.ch === b.ch ? S.DINTRA : getD(a.ch, b.ch);
 function recalc() {
+  S.scCache = null;
   S.plan = S.F.length ? planCalc(S.F, S.P) : null;
   if (!S.plan || !S.plan.items.length) { S.base = S.cur = null; S.health = []; return; }
   S.base = scen(S.plan, 1, S.P, getD, S.DINTRA);
@@ -358,7 +359,8 @@ function vPlan(el) {
   const strat = STRATS[P.strategy] ? P.strategy : '';
   el.innerHTML = `
   <div class="vhead"><div><h2>Build your plan</h2><p>Spots are bought one at a time where they add the most new reach per rupee, within your tier split, caps and daypart limits.</p></div>
-    <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn" data-deck>Export deck (PPTX)</button><button class="btn pri" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button></span></div>
+    <span class="push"><button class="btn" id="pl-save">Save as scenario</button><button class="btn" id="pl-csv">Export spot plan</button><button class="btn" data-deck>Export deck (PPTX)</button><button class="btn" data-ai="Write a planner memo for the client explaining this plan">Ask AI to explain</button><button class="btn pri" id="pl-opt">Optimise for me</button></span></div>
+  <div id="pl-optp">${S.OPT.open ? optHTML() : ''}</div>
   ${S.P.frozen ? `<div class="frozen"><div><b>Schedule is fixed</b> because rates were edited in the Schedule tab. Changing any setting below re-optimises the plan.</div><button class="btn pri" data-reopt>Re-optimise now</button></div>` : ''}
   <div class="planbar" id="pl-bar"></div>
   <div class="grid g-plan">
@@ -527,6 +529,54 @@ function renderBelts() {
       ? `Each spot goes on the programme's <b>best-rated air day</b>. When two programmes in the same time belt share many viewers (overlap ≥ ${thr}), the second one goes to <b>its next best day</b>, so the shared viewers are not hit twice on one day. A pair still meets on the same day only when there is no other air day left that week (for example two weekend-only shows). Change this under Plan settings → Flighting.`
       : S.P.same === 'roadblock' ? 'Roadblock is on: same-hour programmes run on the same nights. Switch Flighting to "Best day, split overlaps" to keep high-overlap pairs on different days.' : 'Stagger is on: same-hour programmes on rival channels run on different nights.')}`;
 }
+// Optimiser: tries strategy x number of channels x programmes per tier x weekly cap on the
+// same budget, brief, period, creatives, rates and basket choices, and ranks the plans by the goal.
+const GOALS = {
+  bal: { l: 'Balanced', d: '60% net reach 1+ and 40% reach 3+', f: A => .6 * A.net + .4 * A.r3 },
+  reach: { l: 'Most people', d: 'highest net reach 1+', f: A => A.net },
+  r3: { l: 'Effective reach', d: 'highest reach 3+', f: A => A.r3 },
+  eff: { l: 'Best value', d: 'most reach points per LKR 1M', f: A => A.spent > 0 ? A.net / (A.spent / 1e6) : 0 }
+};
+const optLabel = x => `${STRATS[x.strategy].label} · ${x.nCh ? x.nCh + ' channels' : 'your channels'} · best ${x.nProg} per tier · max ${x.capWk}/week`;
+function optHTML() {
+  const O = S.OPT, g = GOALS[O.goal], cur = S.cur;
+  const row = (r, i) => `<tr class="${i === 0 ? 'best' : ''}"><td class="l">${i === 0 ? '<span class="tag anchor">Best</span> ' : ''}${esc(optLabel(r.patch))}</td><td><b>${nf(r.net, 1)}%</b></td><td>${nf(r.r3, 1)}%</td><td>${nf(r.freq, 1)}x</td><td>${ni(r.spots)}</td><td>${lkr(r.spent).replace('LKR ', '')}</td><td>${cur ? `<span style="color:${r.net - cur.net >= 0 ? 'var(--good)' : 'var(--bad)'}">${r.net - cur.net >= 0 ? '+' : ''}${nf(r.net - cur.net, 1)}</span>` : ''}</td>
+    <td class="r"><button class="btn sm pri" data-opt-apply="${i}">Apply</button> <button class="btn sm" data-opt-save="${i}">Save as scenario</button></td></tr>`;
+  return `<div class="panel optp"><div class="ph"><h3>Optimise for me</h3><span class="s">tests many plan set-ups on your budget, brief, period, creatives, rates and basket choices</span><span class="push"><button class="link" id="opt-close">Close</button></span></div><div class="pb">
+    <div class="inl" style="gap:10px;flex-wrap:wrap"><span class="muted">Goal</span>${seg('goal', O, Object.entries(GOALS).map(([k, v]) => [k, v.l]))}<span class="muted">${esc(g.d)}</span>
+      <button class="btn pri" id="opt-run" ${O.running ? 'disabled' : ''}>${O.running ? `Testing ${O.done} of ${O.total}…` : O.res ? 'Run again' : 'Find the best plan'}</button></div>
+    ${O.running ? `<div class="optbar"><i style="width:${(O.done / Math.max(1, O.total) * 100).toFixed(0)}%"></i></div>` : ''}
+    ${O.res ? `<div class="tw" style="margin-top:12px"><table><thead><tr><th class="l">Plan set-up (top 5 of ${O.res.n} tested, ${O.res.all.length} different plans)</th><th>Net reach 1+</th><th>Reach 3+</th><th>Avg freq</th><th>Spots</th><th>Budget used</th><th>Reach vs now</th><th></th></tr></thead><tbody>
+      ${O.res.top.map(row).join('')}
+      ${cur ? `<tr class="tot"><td class="l">Your current plan</td><td>${nf(cur.net, 1)}%</td><td>${nf(cur.r3, 1)}%</td><td>${nf(cur.freq, 1)}x</td><td>${ni(cur.spots)}</td><td>${lkr(cur.spent).replace('LKR ', '')}</td><td>—</td><td></td></tr>` : ''}</tbody></table></div>
+      <p class="hint">Each set-up is a full plan: channel budgets by score, the best programmes per tier, spot-by-spot buying with duplication, caps and daypart limits. Apply one to use it, or save several as scenarios and open each one's schedule from the Schedule tab.</p>` : '<p class="hint" style="margin-top:8px">Varies: strategy (Reach / Balanced / Frequency), number of channels (2 up to 8, unless you picked channels yourself), best programmes per tier (1–3) and max spots per programme per week (2–4). Everything else stays as you set it.</p>'}
+  </div></div>`;
+}
+// Best first; ties go to the cheaper, then simpler plan. Set-ups that give the same plan are shown once.
+function optRank(list) {
+  const simp = r => (r.patch.nCh || 0) * 10 + r.patch.nProg + r.patch.capWk / 10, seen = new Set();
+  return list.sort((a, b) => b.score - a.score || a.spent - b.spent || simp(a) - simp(b))
+    .filter(r => { const k = r.net.toFixed(2) + '|' + r.spots + '|' + Math.round(r.spent); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+function renderOpt() { const el = $('#pl-optp'); if (el) el.innerHTML = S.OPT.open ? optHTML() : ''; }
+async function runOpt() {
+  const O = S.OPT, P = S.P; if (O.running || !S.F.length) return;
+  const nMax = Math.min(8, channelStats(S.F).length), chs = P.chMode === 'manual' ? [0] : Array.from({ length: Math.max(1, nMax - 1) }, (_, i) => i + 2).filter(n => n <= nMax); if (!chs.length) chs.push(0);
+  const combos = [];
+  Object.keys(STRATS).forEach(st => chs.forEach(n => [1, 2, 3].forEach(np => [2, 3, 4].forEach(cap => combos.push({ strategy: st, tiers: [...STRATS[st].t], nProg: np, capWk: cap, ...(n ? { chMode: 'auto', nCh: n, split: {} } : {}) })))));
+  O.running = true; O.done = 0; O.total = combos.length; renderOpt();
+  const out = [];
+  for (let i = 0; i < combos.length; i++) {
+    const A = simulate(combos[i]); O.done = i + 1;
+    if (A && A.kept.length) out.push({ patch: combos[i], net: A.net, r3: A.r3, freq: A.freq, spots: A.spots, spent: A.spent, A });
+    if (i % 4 === 3) { renderOpt(); await new Promise(r => setTimeout(r, 0)); }
+  }
+  const f = GOALS[O.goal].f;
+  out.forEach(r => r.score = f(r.A));
+  const all = optRank(out.map(({ A, ...r }) => r));
+  O.res = { n: out.length, top: all.slice(0, 5), all };
+  O.running = false; renderOpt(); toast('Tested ' + out.length + ' plans');
+}
 // Program basket: compact, grouped by channel (or a flat list by spend), with tier filters.
 const ICO_LOCK = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
 const ICO_X = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
@@ -640,8 +690,22 @@ const MONS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
 // creative's duration, All Exposure Value = rate card x spots, Media Value = negotiated x spots,
 // Investment 100% = Media Value, SR Value = Investment x SR %. CPRP = Media Value / GRP,
 // NCPRP = Media Value / NGRP. Taxes apply to Investment and SR Value.
-function scheduleModel() {
-  const A = S.cur, Sc = S.sched, P = S.P;
+// Which plan the Schedule tab shows: the current plan, or a saved scenario rebuilt from its own
+// settings and filters on the loaded data (cached until the data, filters or scenarios change).
+function schedCtx() {
+  const id = S.SCH.sc, sc = id && S.scenarios.find(s => s.id === id);
+  if (!sc) { S.SCH.sc = null; return S.cur && S.sched ? { A: S.cur, Sc: S.sched, P: S.P, sc: null } : null; }
+  if (S.scCache && S.scCache.id === id) return S.scCache.ctx;
+  const P = Object.assign({}, DEFAULT_P, JSON.parse(JSON.stringify(sc.P))), f = sc.FS;
+  const FS = { from: f.from, to: f.to, ch: new Set(f.ch), cat: new Set(f.cat), day: new Set(f.day), h0: f.h0, h1: f.h1, minTvr: f.minTvr, q: f.q || '', p: f.p || '' };
+  const pl = planCalc(filterRows(FS), P);
+  let ctx = null;
+  if (pl && pl.items.length) { const A = scen(pl, 1 - (P.cut || 0) / 100, P, getD, S.DINTRA); if (A.kept.length) ctx = { A, Sc: buildSchedule(A, P, progDup), P, sc }; }
+  S.scCache = { id, ctx };
+  return ctx;
+}
+function scheduleModel(ctx = schedCtx()) {
+  const { A, Sc, P } = ctx;
   const sscl = (+P.sscl || 0) / 100, vat = (+P.vat || 0) / 100, srP = (P.sr ?? 85) / 100;
   const tax = v => { const a = v * sscl, b = (v + a) * vat; return { sscl: a, vat: b, total: v + a + b }; };
   const chans = A.chs.map(c => {
@@ -684,9 +748,11 @@ function reachTbl(M) {
     <p class="hint">Estimates from the ratings file: programme reach (Reach %, or TVR × 1.4), repeat-spot and duplication factors from the Duplication tab, and the negative binomial (NBD) exposure model for 2+ to 5+ (fitted to the reach and GRP, so heavy viewers see the ad more often than light viewers). Use them to compare plans, not as measured results.</p>`;
 }
 function vSchedule(el) {
-  const A = S.cur, P = S.P;
-  if (!A || !S.sched) { el.innerHTML = `<div class="empty"><b>No plan to schedule yet</b><p>Build a plan in the Planner first.</p><button class="btn pri" data-tab-go="plan">Go to Planner</button></div>`; return; }
-  const M = scheduleModel(), meta = lsGet('deckMeta', {});
+  const ctx = schedCtx();
+  const pick = `<div class="schpick"><span class="muted">Schedule for</span><div class="chips"><button class="chip ${!S.SCH.sc ? 'on' : ''}" data-sch-sc="">Current plan</button>${S.scenarios.map(s => `<button class="chip ${S.SCH.sc === s.id ? 'on' : ''}" data-sch-sc="${s.id}">${esc(s.name)}</button>`).join('')}</div></div>`;
+  if (!ctx) { el.innerHTML = (S.scenarios.length ? pick : '') + `<div class="empty"><b>${S.SCH.sc ? 'This scenario has no programmes with the loaded data' : 'No plan to schedule yet'}</b><p>Build a plan in the Planner first.</p><button class="btn pri" data-tab-go="plan">Go to Planner</button></div>`; return; }
+  const { A, P } = ctx, RO = !!ctx.sc, dis = RO ? 'disabled' : '';
+  const M = scheduleModel(ctx), meta = lsGet('deckMeta', {});
   if (!S.SCH.ch || !M.chans.find(c => c.ch === S.SCH.ch)) S.SCH.ch = M.chans[0].ch;
   const C = M.chans.find(c => c.ch === S.SCH.ch), days = M.days;
   const months = []; days.forEach(d => { const k = d.iso.slice(0, 7); const l = months[months.length - 1]; if (l && l.k === k) l.n++; else months.push({ k, n: 1, label: MONS[+k.slice(5) - 1] + ' ' + k.slice(0, 4) }); });
@@ -697,7 +763,7 @@ function vSchedule(el) {
     <tr><th class="sx l">Programme Name</th><th class="l">Day</th><th>From</th><th>To</th><th>Dur</th><th title="Average TVR in the ratings file">TVR</th><th title="TVR × spots">GRP</th><th title="GRP × duration ÷ 30 (30-sec equivalent)">NGRP</th><th>No of Spots</th><th title="Rate card for 30 seconds. Estimated values in italics: type the real rate.">Rate card 30s</th><th title="30-sec rate card ÷ 30 × duration">Rate Card Rate</th><th title="Rate card rate × (1 − discount)">Negotiated Rate</th><th title="Rate card rate × spots">All Exposure Value</th><th title="Negotiated rate × spots">Media Value</th><th>Investment 100%</th><th>${srL}</th>${days.map(d => `<th class="dc ${wk(d) ? 'we' : ''}">${d.day[0]}<br>${+d.iso.slice(8)}</th>`).join('')}</tr>`;
   const body = C.sections.map(sec => `<tr class="secr"><td class="sx l" colspan="${NC}">${esc(sec.m.name)} · ${sec.m.dur} sec</td>${days.map(d => `<td class="${wk(d) ? 'we' : ''}"></td>`).join('')}</tr>` +
     sec.rows.map(r => `<tr><td class="sx l"><button class="nm" ${xa({ ch: r.x.ch, p: r.x.p })}>${esc(pn(r.x.p))}</button></td><td class="l">${r.x.pattern}</td><td>${r.x.from}</td><td>${r.x.to}</td><td>${sec.m.dur}</td><td>${F2(r.tvr)}</td><td>${F2(r.grp)}</td><td>${F2(r.ngrp)}</td><td><b>${r.spots}</b></td>
-      <td><input class="rate ${r.x.rateSet ? '' : 'est'}" data-rate="${esc(r.x.key)}" value="${Math.round(r.x.rate30)}" title="${r.x.rateSet ? 'Your rate card value' : 'Estimated: CPRP × TVR (min. rate). Type the real 30-sec rate.'}"></td>
+      <td><input ${dis} class="rate ${r.x.rateSet ? '' : 'est'}" data-rate="${esc(r.x.key)}" value="${Math.round(r.x.rate30)}" title="${r.x.rateSet ? 'Your rate card value' : 'Estimated: CPRP × TVR (min. rate). Type the real 30-sec rate.'}"></td>
       <td>${L(r.rc)}</td><td>${L(r.ng)}</td><td>${L(r.trc)}</td><td>${L(r.tng)}</td><td><b>${L(r.tng)}</b></td><td>${L(r.sr)}</td>${days.map(d => { const v = r.byDate[d.iso]; return `<td class="dc ${wk(d) ? 'we' : ''} ${v ? 'on' : ''}">${v || ''}</td>`; }).join('')}</tr>`).join('')).join('');
   const dayTot = days.map(d => C.sections.reduce((a, sec) => a + sec.rows.reduce((b, r) => b + (r.byDate[d.iso] || 0), 0), 0));
   const foot = `<tr class="tot"><td class="sx l" colspan="6">${esc(chName(C.ch))} total</td><td>${F2(C.grp)}</td><td>${F2(C.ngrp)}</td><td>${C.spots}</td><td></td><td></td><td></td><td>${L(C.rcT)}</td><td>${L(C.net)}</td><td>${L(C.net)}</td><td>${L(C.sr)}</td>${dayTot.map((v, i) => `<td class="dc ${wk(days[i]) ? 'we' : ''}">${v || ''}</td>`).join('')}</tr>`;
@@ -708,21 +774,23 @@ function vSchedule(el) {
   const sm = (l, v, cls = '') => `<div class="m ${cls}"><small>${l}</small><b>${v}</b></div>`;
   el.innerHTML = `
   <div class="vhead"><div><h2>Booking schedule</h2><p>Day-by-day spots per channel, by creative, ready to send to channels. Same layout as the Excel export.</p></div>
-    <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule</button></span></div>
-  ${A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
-  <div class="planbar">${sm('Campaign period', fmtDate(S.sched.start) + ' – ' + fmtDate(S.sched.end), 'hl')}${sm('Net reach 1+', nf(M.tot.reach.at[0], 1) + '%', 'hl')}${sm('Reach 3+', nf(M.tot.reach.at[2], 1) + '%')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
+    <span class="push"><button class="btn pri" id="sch-xlsx">Export Excel schedule${RO ? ' (this scenario)' : ''}</button></span></div>
+  ${S.scenarios.length ? pick : ''}
+  ${RO ? `<div class="frozen"><div><b>Viewing scenario "${esc(ctx.sc.name)}"</b>: its own settings, basket and filters, rebuilt on the loaded data. Read-only here; load it into the Planner to change rates or settings.</div><button class="btn" data-sch-sc="">Back to current plan</button><button class="btn pri" data-sc-load="${ctx.sc.id}">Load into Planner</button></div>` : ''}
+  ${!RO && A.fixed ? `<div class="frozen ${A.over > 0 ? 'over' : ''}"><div><b>Schedule kept as planned while you enter rates.</b> Same programmes, spots and days; only the costs changed. Budget used <b>LKR ${L(A.spent)}</b> of LKR ${L(A.B)}${A.over > 0 ? ` · <b>over by LKR ${L(A.over)}</b>` : ` · LKR ${L(A.unspent)} left`}.</div><button class="btn pri" data-reopt>Re-optimise with these rates</button></div>` : ''}
+  <div class="planbar">${sm('Campaign period', fmtDate(ctx.Sc.start) + ' – ' + fmtDate(ctx.Sc.end), 'hl')}${sm('Net reach 1+', nf(M.tot.reach.at[0], 1) + '%', 'hl')}${sm('Reach 3+', nf(M.tot.reach.at[2], 1) + '%')}${sm('Spots', ni(M.tot.spots))}${sm('GRP', nf(M.tot.grp, 1))}${sm('NGRP', nf(M.tot.ngrp, 1))}${sm('CPRP', L(M.tot.cprp))}${sm('NCPRP', L(M.tot.ncprp))}${sm('All exposure value', 'LKR ' + L(M.tot.rcT))}${sm('Media value (investment)', 'LKR ' + L(M.tot.net))}${sm('Total with taxes', 'LKR ' + L(M.tot.total))}${sm('Creatives', esc(mixText(P)))}</div>
   <div class="grid g2">
     ${panel('Schedule details', 'shown on the Excel cover and channel sheets', `<div class="two">
       <label class="fld"><span>Client</span><input type="text" data-meta="client" value="${esc(meta.client || '')}"></label>
       <label class="fld"><span>Brand</span><input type="text" data-meta="brand" value="${esc(meta.brand || '')}"></label>
       <label class="fld"><span>Campaign</span><input type="text" data-meta="campaign" value="${esc(meta.campaign || '')}"></label>
       <label class="fld"><span>Primary TG</span><input type="text" data-meta="tg" value="${esc(meta.tg || '')}" placeholder="e.g. 16-50 Male & Female SEC All"></label>
-      <label class="fld"><span>SSCL %</span>${`<input type="number" data-p="sscl" min="0" max="20" step="0.5" value="${P.sscl}">`}</label>
-      <label class="fld"><span>VAT %</span>${`<input type="number" data-p="vat" min="0" max="30" step="0.5" value="${P.vat}">`}</label>
-      <label class="fld"><span>SR value % (of investment)</span>${`<input type="number" data-p="sr" min="0" max="100" step="1" value="${P.sr ?? 85}">`}</label></div>
+      <label class="fld"><span>SSCL %</span>${`<input ${dis} type="number" data-p="sscl" min="0" max="20" step="0.5" value="${P.sscl}">`}</label>
+      <label class="fld"><span>VAT %</span>${`<input ${dis} type="number" data-p="vat" min="0" max="30" step="0.5" value="${P.vat}">`}</label>
+      <label class="fld"><span>SR value % (of investment)</span>${`<input ${dis} type="number" data-p="sr" min="0" max="100" step="1" value="${P.sr ?? 85}">`}</label></div>
       <p class="hint">Change the campaign dates, creatives or caps in <button class="link" data-tab-go="plan">Planner settings</button>; the schedule is rebuilt automatically.</p>`)}
     ${panel('By channel', 'negotiated rate = rate card × (1 − discount) · CPRP = media value ÷ GRP', `<div class="tw"><table><thead><tr><th>Channel</th><th>Discount %</th><th>Spots</th><th>GRP</th><th>CPRP</th><th>Media value</th><th>With taxes</th></tr></thead><tbody>
-      ${M.chans.map(c => `<tr><td>${dot(c.ch)}${esc(chName(c.ch))}</td><td><input class="rate" type="number" min="0" max="95" step="1" data-disc="${esc(c.ch)}" value="${c.disc}" style="width:64px"></td><td>${c.spots}</td><td>${nf(c.grp, 1)}</td><td>${L(c.cprp)}</td><td><b>${L(c.net)}</b></td><td>${L(c.total)}</td></tr>`).join('')}
+      ${M.chans.map(c => `<tr><td>${dot(c.ch)}${esc(chName(c.ch))}</td><td><input ${dis} class="rate" type="number" min="0" max="95" step="1" data-disc="${esc(c.ch)}" value="${c.disc}" style="width:64px"></td><td>${c.spots}</td><td>${nf(c.grp, 1)}</td><td>${L(c.cprp)}</td><td><b>${L(c.net)}</b></td><td>${L(c.total)}</td></tr>`).join('')}
       <tr class="tot"><td>Total</td><td></td><td>${M.tot.spots}</td><td>${nf(M.tot.grp, 1)}</td><td>${L(M.tot.cprp)}</td><td><b>${L(M.tot.net)}</b></td><td>${L(M.tot.total)}</td></tr></tbody></table></div>
       <p class="hint">Changing a rate or discount changes spot costs, so the plan is re-optimised.</p>`)}
   </div>
@@ -738,9 +806,10 @@ function vSchedule(el) {
     <p class="hint">Rate card 30s in <i>italics</i> is estimated from the rating; type the channel's rate card to replace it. Shaded columns are weekends. Click a programme for its ratings detail.</p></div></div>`;
 }
 async function runXlsx(btn) {
-  if (!S.cur || !S.sched) { toast('Build a plan first'); return; }
+  const ctx = schedCtx();
+  if (!ctx) { toast('Build a plan first'); return; }
   btn.disabled = true; const t = btn.textContent; btn.textContent = 'Building…';
-  try { const name = await exportScheduleXlsx(scheduleModel(), { meta: lsGet('deckMeta', {}), P: S.P, start: S.sched.start, end: S.sched.end, net: S.cur.net, r3: S.cur.r3 }); toast('Downloaded ' + name); }
+  try { const name = await exportScheduleXlsx(scheduleModel(ctx), { meta: Object.assign({}, lsGet('deckMeta', {}), ctx.sc ? { scenario: ctx.sc.name } : {}), P: ctx.P, start: ctx.Sc.start, end: ctx.Sc.end, net: ctx.A.net, r3: ctx.A.r3 }); toast('Downloaded ' + name); }
   catch (e) { toast('Excel export failed: ' + e.message); }
   finally { btn.disabled = false; btn.textContent = t; }
 }
@@ -757,14 +826,14 @@ function snapshot(name, A, P, FS) {
 function saveScenario(name, A, P = S.P, FS = S.FS) {
   if (!A) { toast('Nothing to save: the plan is empty'); return; }
   S.scenarios.push(snapshot(name || ('Scenario ' + String.fromCharCode(65 + S.scenarios.length % 26)), A, P, FS));
-  lsSet('scenarios', S.scenarios); toast('Scenario saved');
+  lsSet('scenarios', S.scenarios); S.scCache = null; toast('Scenario saved: open it with Schedule');
 }
 function loadScenario(sc) {
   S.P = Object.assign({}, DEFAULT_P, JSON.parse(JSON.stringify(sc.P))); S.PD = null; savePlan();
   const f = sc.FS;
   S.FS = { from: f.from, to: f.to, ch: new Set(f.ch.filter(c => S.CH.includes(c))), cat: new Set(f.cat.filter(c => S.CATS.includes(c))), day: new Set(f.day), h0: f.h0, h1: f.h1, minTvr: f.minTvr, q: f.q || '', p: f.p || '' };
   if (!S.FS.ch.size) S.FS.ch = new Set(S.CH); if (!S.FS.cat.size) S.FS.cat = new Set(S.CATS);
-  applyFilters(); setTab('plan'); toast('Loaded "' + sc.name + '"');
+  S.SCH.sc = null; applyFilters(); setTab('plan'); toast('Loaded "' + sc.name + '"');
 }
 const curAsScen = () => S.cur ? snapshot('Current plan', S.cur, S.P, S.FS) : null;
 function vScen(el) {
@@ -778,7 +847,7 @@ function vScen(el) {
       <div class="mini">${r.chs.map(c => `<div style="width:${(c.w * 100).toFixed(1)}%;background:${cv(c.ch)}"></div>`).join('')}</div>
       <div class="foot">${r.chs.map(c => esc(chName(c.ch).replace(' TV', '')) + ' ' + nf(c.w * 100, 0)).join(' · ')}</div>
       <div class="foot">${r.items.length} programs${r.spots ? ' · ' + ni(r.spots) + ' spots' : ''}</div>
-      <div class="acts">${isCur ? `<button class="btn sm pri" id="sc-save">Save current</button>` : `<button class="btn sm" data-sc-load="${sc.id}">Load</button><button class="btn sm ${S.cmp === sc.id ? 'pri' : ''}" data-sc-cmp="${sc.id}">Compare</button><button class="btn sm" data-sc-csv="${sc.id}">CSV</button><button class="btn sm danger" data-sc-del="${sc.id}">Delete</button>`}</div></div>`;
+      <div class="acts">${isCur ? `<button class="btn sm pri" id="sc-save">Save current</button><button class="btn sm" data-sch-sc="">Schedule</button>` : `<button class="btn sm pri" data-sch-sc="${sc.id}">Schedule</button><button class="btn sm" data-sc-load="${sc.id}">Load</button><button class="btn sm ${S.cmp === sc.id ? 'pri' : ''}" data-sc-cmp="${sc.id}">Compare</button><button class="btn sm" data-sc-csv="${sc.id}">CSV</button><button class="btn sm danger" data-sc-del="${sc.id}">Delete</button>`}</div></div>`;
   };
   const quick = [10, 25, 40].map(c => ({ c, r: S.cur ? simulate({ cut: c }) : null }));
   const sel = list.find(s => s.id === S.cmp);
@@ -1307,9 +1376,15 @@ document.addEventListener('click', e => {
   let el;
   if ((el = t.closest('[data-pick]'))) { pickFile(); return; }
   if (t.closest('#pl-applyb')) { applyDraft(); return; }
+  if (t.closest('#pl-opt')) { S.OPT.open = true; renderOpt(); $('#pl-optp').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); return; }
+  if (t.closest('#opt-close')) { S.OPT.open = false; renderOpt(); return; }
+  if (t.closest('#opt-run')) { runOpt(); return; }
+  if ((el = t.closest('[data-opt-apply]'))) { const r = S.OPT.res.top[+el.dataset.optApply]; Object.assign(S.P, JSON.parse(JSON.stringify(r.patch))); S.PD = null; S.P.frozen = null; savePlan(); recalc(); vPlan($('#v-plan')); toast('Applied: ' + optLabel(r.patch)); return; }
+  if ((el = t.closest('[data-opt-save]'))) { const r = S.OPT.res.top[+el.dataset.optSave], P2 = Object.assign({}, S.P, JSON.parse(JSON.stringify(r.patch)), { frozen: null }); saveScenario('Optimised: ' + optLabel(r.patch), simulate(r.patch), P2, S.FS); el.textContent = 'Saved'; el.disabled = true; return; }
   if (t.closest('#pl-discard')) { S.PD = null; vPlan($('#v-plan')); toast('Changes discarded'); return; }
   if (t.closest('[data-cr-add]')) { const D = draft(); D.creatives.push({ name: 'Creative ' + String.fromCharCode(65 + D.creatives.length), dur: 10, share: 0 }); vPlan($('#v-plan')); return; }
   if ((el = t.closest('[data-cr-del]'))) { draft().creatives.splice(+el.dataset.crDel, 1); vPlan($('#v-plan')); return; }
+  if ((el = t.closest('[data-sch-sc]'))) { S.SCH.sc = el.dataset.schSc || null; S.SCH.ch = null; if (S.TAB !== 'schedule') setTab('schedule'); else vSchedule($('#v-schedule')); return; }
   if ((el = t.closest('[data-sch-ch]'))) { S.SCH.ch = el.dataset.schCh; vSchedule($('#v-schedule')); return; }
   if (t.closest('#sch-xlsx')) { runXlsx(t.closest('#sch-xlsx')); return; }
   if (t.closest('[data-reopt]')) { S.P.frozen = null; savePlan(); recalc(); refreshPlanViews(); toast('Re-optimised with the new rates'); return; }
@@ -1361,6 +1436,7 @@ document.addEventListener('click', e => {
       const D = draft(); D[k] = el.dataset.v; if (k === 'strategy') D.tiers = [...STRATS[el.dataset.v].t];
       vPlan($('#v-plan')); return;
     }
+    if (k === 'goal') { S.OPT.goal = el.dataset.v; if (S.OPT.res && S.OPT.res.all) { const f = GOALS[S.OPT.goal].f; S.OPT.res.all.forEach(r => r.score = f(r)); S.OPT.res.all = optRank(S.OPT.res.all); S.OPT.res.top = S.OPT.res.all.slice(0, 5); } renderOpt(); return; }
     if (k === 'sdDays' || k === 'sdScope') { S.SD[k] = el.dataset.v; killCharts('c-'); vDup($('#v-dup')); return; }
     if (k === 'view') { S.BK.view = el.dataset.v; S.BK.all = false; renderBasket(); return; }
     if (k === 'fv') { S.fv = el.dataset.v; el.parentElement.querySelectorAll('button').forEach(b => b.classList.toggle('on', b === el)); renderFlight(); return; }
@@ -1392,7 +1468,7 @@ document.addEventListener('click', e => {
   if ((el = t.closest('[data-sc-load]'))) { loadScenario(S.scenarios.find(s => s.id === el.dataset.scLoad)); return; }
   if ((el = t.closest('[data-sc-cmp]'))) { S.cmp = S.cmp === el.dataset.scCmp ? null : el.dataset.scCmp; vScen($('#v-scen')); return; }
   if ((el = t.closest('[data-sc-csv]'))) { const s = S.scenarios.find(x => x.id === el.dataset.scCsv); download('plan-' + s.name.replace(/\W+/g, '-') + '.csv', planCSV(s)); return; }
-  if ((el = t.closest('[data-sc-del]'))) { S.scenarios = S.scenarios.filter(s => s.id !== el.dataset.scDel); lsSet('scenarios', S.scenarios); vScen($('#v-scen')); return; }
+  if ((el = t.closest('[data-sc-del]'))) { S.scenarios = S.scenarios.filter(s => s.id !== el.dataset.scDel); lsSet('scenarios', S.scenarios); S.scCache = null; if (S.SCH.sc === el.dataset.scDel) S.SCH.sc = null; vScen($('#v-scen')); return; }
   if ((el = t.closest('[data-act]'))) { applyAction(S.chat[+el.dataset.act].action); return; }
   if ((el = t.closest('[data-act-save]'))) { const m = S.chat[+el.dataset.actSave]; const q = S.chat[+el.dataset.actSave - 1]; saveActionScenario(m.action, 'AI: ' + (q ? q.text.slice(0, 30) : 'what-if')); return; }
   if ((el = t.closest('th[data-sort]'))) { const k = el.dataset.sort; S.DSORT = S.DSORT.k === k ? { k, d: -S.DSORT.d } : { k, d: -1 }; vData($('#v-data')); return; }

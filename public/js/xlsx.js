@@ -26,7 +26,8 @@ const box = { top: thin, left: thin, bottom: thin, right: thin };
 
 export async function exportScheduleXlsx(M, o) {
   await loadLib();
-  const { meta = {}, P, start, end } = o;
+  const { meta: meta0 = {}, P, start, end } = o;
+  const meta = Object.assign({}, meta0, meta0.scenario ? { campaign: [meta0.campaign, 'Scenario: ' + meta0.scenario].filter(Boolean).join(' · ') } : {});
   const wb = new window.ExcelJS.Workbook();
   wb.creator = meta.by || 'TV Media Planner'; wb.created = new Date();
   const used = new Set(['Cover', 'Spot list']);
@@ -237,7 +238,7 @@ export async function exportScheduleXlsx(M, o) {
 
   const buf = await wb.xlsx.writeBuffer();
   const safe = s => String(s || '').replace(/[^\w\- ]+/g, '').trim();
-  const name = `${safe(meta.client) || 'TV'} - Schedule - ${start} to ${end}.xlsx`.replace(/\s+/g, ' ');
+  const name = `${safe(meta.client) || 'TV'} - Schedule${meta0.scenario ? ' - ' + safe(meta0.scenario) : ''} - ${start} to ${end}.xlsx`.replace(/\s+/g, ' ');
   const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })); a.download = name;
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500);
   return name;
